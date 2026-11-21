@@ -28,7 +28,6 @@
   .inp:focus{outline:2px solid #16a34a;border-color:#16a34a}
   .btn{padding:.5rem 1rem;border-radius:.5rem;font-weight:600;color:#fff;cursor:pointer}
   #map{height:480px;border-radius:.75rem;z-index:0}
-  #wm{position:fixed;inset:0;pointer-events:none;z-index:30}
   #credit{max-width:72rem;margin:1.5rem auto 2rem;padding:0 .75rem}
   #credit .box{background:linear-gradient(135deg,#14532d,#166534);color:#fff;border-radius:1rem;padding:1.1rem 1.25rem;text-align:center;box-shadow:0 4px 14px rgba(0,0,0,.15)}
   #credit .t1{font-weight:700;font-size:.95rem;line-height:1.9}
@@ -64,18 +63,7 @@ const FIREBASE_CONFIG = {
     </div>
   </div>
 </div>
-<div id="wm"></div>
-<script>
-  document.getElementById('cy').textContent = new Date().getFullYear();
-  (function(){
-    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240">'
-      + '<g transform="rotate(-25 180 120)" fill="#166534" fill-opacity="0.075" font-family="Tahoma,Arial,sans-serif" text-anchor="middle">'
-      + '<text x="180" y="100" font-size="19" font-weight="700">م. محمد عبد الجواد</text>'
-      + '<text x="180" y="126" font-size="15">مدير قطاع مكافحة الآفات</text>'
-      + '<text x="180" y="150" font-size="13">جميع الحقوق محفوظة — 01000754632</text></g></svg>';
-    document.getElementById('wm').style.backgroundImage = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(svg) + '")';
-  })();
-</script>
+<script>document.getElementById('cy').textContent = new Date().getFullYear();</script>
 <div id="printArea"></div>
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-4 py-2 rounded-lg hidden z-50"></div>
 
