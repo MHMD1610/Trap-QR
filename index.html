@@ -28,6 +28,15 @@
   .inp:focus{outline:2px solid #16a34a;border-color:#16a34a}
   .btn{padding:.5rem 1rem;border-radius:.5rem;font-weight:600;color:#fff;cursor:pointer}
   #map{height:480px;border-radius:.75rem;z-index:0}
+  #wm{position:fixed;inset:0;pointer-events:none;z-index:30}
+  #credit{max-width:72rem;margin:1.5rem auto 2rem;padding:0 .75rem}
+  #credit .box{background:linear-gradient(135deg,#14532d,#166534);color:#fff;border-radius:1rem;padding:1.1rem 1.25rem;text-align:center;box-shadow:0 4px 14px rgba(0,0,0,.15)}
+  #credit .t1{font-weight:700;font-size:.95rem;line-height:1.9}
+  #credit .t2{font-size:.78rem;opacity:.85;margin-top:.25rem}
+  #credit .row{display:flex;gap:.5rem;justify-content:center;flex-wrap:wrap;margin-top:.8rem}
+  #credit a{display:inline-flex;align-items:center;gap:.4rem;padding:.45rem .9rem;border-radius:999px;font-size:.85rem;font-weight:600;text-decoration:none;direction:ltr}
+  #credit a.call{background:#fff;color:#14532d}
+  #credit a.wa{background:#25d366;color:#fff}
 </style>
 </head>
 <body>
@@ -45,6 +54,28 @@ const FIREBASE_CONFIG = {
 </script>
 
 <div id="app" class="max-w-6xl mx-auto p-3 md:p-6"></div>
+<div id="credit">
+  <div class="box">
+    <div class="t1">تم إنشاء وبرمجة هذا النظام بواسطة<br>م. محمد عبد الجواد — مدير قطاع مكافحة الآفات</div>
+    <div class="t2">جميع الحقوق محفوظة © <span id="cy"></span> — يُمنع النسخ أو إعادة الاستخدام دون إذن مسبق</div>
+    <div class="row">
+      <a class="call" href="tel:+201000754632">📞 01000754632</a>
+      <a class="wa" target="_blank" rel="noopener" href="https://wa.me/201000754632">💬 واتساب</a>
+    </div>
+  </div>
+</div>
+<div id="wm"></div>
+<script>
+  document.getElementById('cy').textContent = new Date().getFullYear();
+  (function(){
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240">'
+      + '<g transform="rotate(-25 180 120)" fill="#166534" fill-opacity="0.075" font-family="Tahoma,Arial,sans-serif" text-anchor="middle">'
+      + '<text x="180" y="100" font-size="19" font-weight="700">م. محمد عبد الجواد</text>'
+      + '<text x="180" y="126" font-size="15">مدير قطاع مكافحة الآفات</text>'
+      + '<text x="180" y="150" font-size="13">جميع الحقوق محفوظة — 01000754632</text></g></svg>';
+    document.getElementById('wm').style.backgroundImage = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(svg) + '")';
+  })();
+</script>
 <div id="printArea"></div>
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-4 py-2 rounded-lg hidden z-50"></div>
 
