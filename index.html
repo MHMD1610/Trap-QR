@@ -6,27 +6,32 @@
 <title>نظام QR لمصائد الحشرات</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <style>
   body{font-family:Tahoma,Arial,sans-serif;background:#f1f5f0}
   #printArea{display:none}
+  @page{size:A4;margin:8mm}
   @media print{
     body>*:not(#printArea){display:none!important}
-    #printArea{display:grid!important;grid-template-columns:repeat(3,1fr);gap:8mm;padding:8mm}
-    .label{border:1px dashed #333;padding:6px;text-align:center;page-break-inside:avoid}
-    .label img,.label canvas{margin:0 auto}
+    body{background:#fff}
+    #printArea{display:grid!important;gap:4mm}
+    .label{border:1px dashed #333;padding:4px;text-align:center;page-break-inside:avoid;break-inside:avoid;display:flex;flex-direction:column;align-items:center}
+    .label .q{display:flex;justify-content:center}
   }
   .inp{width:100%;border:1px solid #cbd5e1;border-radius:.5rem;padding:.5rem .75rem;background:#fff}
   .inp:focus{outline:2px solid #16a34a;border-color:#16a34a}
   .btn{padding:.5rem 1rem;border-radius:.5rem;font-weight:600;color:#fff;cursor:pointer}
+  #map{height:480px;border-radius:.75rem;z-index:0}
 </style>
 </head>
 <body>
 
-<!-- ===================== إعدادات Firebase =====================
-     ضع بيانات مشروعك هنا. لو تُركت فارغة يعمل النظام محلياً (تجريبي) على المتصفح فقط. -->
 <script>
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyB3t4U11ZSwSdhF4R6O_Qdkv6EoOjSEdJI",
@@ -39,11 +44,29 @@ const FIREBASE_CONFIG = {
 };
 </script>
 
-<div id="app" class="max-w-5xl mx-auto p-3 md:p-6"></div>
+<div id="app" class="max-w-6xl mx-auto p-3 md:p-6"></div>
 <div id="printArea"></div>
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-4 py-2 rounded-lg hidden z-50"></div>
 
 <script>
+/* ===================== القوائم الافتراضية ===================== */
+const DEFAULT_LISTS = {
+  names: [],
+  types: ['فرمونية','ضوئية','لاصقة','مائية'],
+  locations: [],
+  species: ['سوسة النخيل الحمراء','دوباس النخيل','حفار ساق النخيل','ذبابة الفاكهة']
+};
+const LIST_TITLES = {names:'أسماء المصائد', types:'أنواع المصائد', locations:'المواقع', species:'أنواع الحشرات'};
+function normLists(o){
+  const out={};
+  for(const k in DEFAULT_LISTS){
+    const v = o && o[k];
+    const arr = v ? Object.values(v).filter(x=>typeof x==='string' && x.trim()) : [];
+    out[k] = arr.length ? arr : [...DEFAULT_LISTS[k]];
+  }
+  return out;
+}
+
 /* ===================== طبقة التخزين ===================== */
 const useFirebase = !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL);
 let DB, auth = null, CUR = null, IS_ADMIN = false;
@@ -61,7 +84,9 @@ if (useFirebase) {
     async addReading(c,r){ await rdb.ref('readings/'+c).push(r); },
     async deleteReading(c,id){ await rdb.ref(`readings/${c}/${id}`).remove(); },
     async isAdmin(u){ try{ const s = await rdb.ref('admins/'+u).once('value'); return s.val()===true; }catch(e){ return false; } },
-    async allReadings(){ const s = await rdb.ref('readings').once('value'); const o=s.val()||{}; let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; }
+    async allReadings(){ const s = await rdb.ref('readings').once('value'); const o=s.val()||{}; let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; },
+    async getLists(){ try{ const s = await rdb.ref('lists').once('value'); return normLists(s.val()); }catch(e){ return normLists(null); } },
+    async saveList(k,arr){ await rdb.ref('lists/'+k).set(arr); }
   };
 } else {
   const L = k => JSON.parse(localStorage.getItem(k) || '{}');
@@ -76,7 +101,9 @@ if (useFirebase) {
     async addReading(c,r){ const o=L('readings'); o[c]=o[c]||{}; o[c]['r'+Date.now()+Math.random().toString(36).slice(2,6)]=r; S('readings',o); },
     async deleteReading(c,id){ const o=L('readings'); if(o[c]) delete o[c][id]; S('readings',o); },
     async isAdmin(){ return true; },
-    async allReadings(){ const o=L('readings'); let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; }
+    async allReadings(){ const o=L('readings'); let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; },
+    async getLists(){ return normLists(L('lists')); },
+    async saveList(k,arr){ const o=L('lists'); o[k]=arr; S('lists',o); }
   };
 }
 
@@ -85,11 +112,13 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cleanCode = s => String(s).trim().toUpperCase().replace(/[.#$\[\]\/\s]+/g,'-');
 const fmtDate = ts => new Date(ts).toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'});
+const fmtISO = ts => ts ? new Date(ts - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16).replace('T',' ') : '';
 function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'),2200); }
 function baseUrl(){ return localStorage.getItem('baseUrl') || (location.origin + location.pathname); }
 function trapUrl(code){ return baseUrl() + '?trap=' + encodeURIComponent(code); }
 function mapUrl(t){ return (t.lat && t.lng) ? `https://www.google.com/maps?q=${t.lat},${t.lng}` : ''; }
 const STATUS = {normal:['طبيعي','bg-green-100 text-green-800'], low:['إصابة منخفضة','bg-yellow-100 text-yellow-800'], high:['إصابة مرتفعة','bg-red-100 text-red-800']};
+const uniq = a => [...new Set(a.filter(Boolean))];
 
 function makeQR(el, text, size=220){
   el.innerHTML=''; new QRCode(el,{text,width:size,height:size,correctLevel:QRCode.CorrectLevel.M});
@@ -99,6 +128,30 @@ function qrDataUrl(text,size=400){
     setTimeout(()=>{ const c=d.querySelector('canvas'); res(c?c.toDataURL('image/png'):d.querySelector('img').src); },80); });
 }
 function downloadFile(name, content, type){ const a=document.createElement('a'); a.href = content.startsWith('data:')?content:URL.createObjectURL(new Blob([content],{type})); a.download=name; a.click(); }
+
+/* قوائم الاختيار الموحدة */
+let LISTS = normLists(null);
+function listSelect(id,key,val,allowNew=true){
+  const arr=[...LISTS[key]]; if(val && !arr.includes(val)) arr.push(val);
+  return `<select id="${id}" class="inp" data-list="${key}" data-new="${allowNew?1:0}"><option value="">— اختر —</option>${arr.map(x=>`<option value="${esc(x)}" ${x===val?'selected':''}>${esc(x)}</option>`).join('')}${allowNew?'<option value="__new__">➕ إضافة قيمة جديدة…</option>':''}</select>`;
+}
+function bindListSelects(root){
+  root.querySelectorAll('select[data-list]').forEach(sel=>{
+    let prev = sel.value;
+    sel.onchange = async () => {
+      if(sel.value!=='__new__'){ prev=sel.value; return; }
+      const k = sel.dataset.list;
+      const v = (prompt('اكتب القيمة الجديدة — '+LIST_TITLES[k])||'').trim();
+      if(!v){ sel.value=prev; return; }
+      if(!LISTS[k].includes(v)){
+        LISTS[k]=[...LISTS[k],v]; await DB.saveList(k,LISTS[k]);
+        const o=document.createElement('option'); o.value=v; o.textContent=v; sel.insertBefore(o, sel.lastElementChild);
+        toast('تمت إضافة القيمة للقائمة');
+      }
+      sel.value=v; prev=v;
+    };
+  });
+}
 
 const params = new URLSearchParams(location.search);
 const trapParam = params.get('trap');
@@ -120,14 +173,17 @@ function bindLogin(){
 function header(sub=''){
   return `<div class="flex items-center justify-between mb-4 flex-wrap gap-2">
     <h1 class="text-xl md:text-2xl font-bold text-green-800">🪤 نظام مصائد الحشرات ${sub}</h1>
-    <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
-    ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(CUR.email)})</button>`:''}
+    <div class="flex gap-2 items-center">
+      <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
+      ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(CUR.email)})</button>`:''}
+    </div>
   </div>`;
 }
 
 /* ===================== صفحة المصيدة (بعد السكان) ===================== */
 async function renderTrap(code){
   const app=$('#app'); app.innerHTML = header() + '<p>جاري التحميل...</p>';
+  LISTS = await DB.getLists();
   const t = await DB.getTrap(code);
   if(!t){ app.innerHTML = header()+`<div class="bg-white p-6 rounded-xl">المصيدة <b>${esc(code)}</b> غير موجودة. <a class="text-green-700 underline" href="${location.pathname}">لوحة التحكم</a></div>`; return; }
   const readings = await DB.getReadings(code);
@@ -174,7 +230,7 @@ async function renderTrap(code){
     <div class="md:col-span-2 font-semibold">➕ إضافة قراءة جديدة</div>
     <label class="text-sm">التاريخ والوقت<input required type="datetime-local" id="r_date" class="inp" value="${now}"></label>
     <label class="text-sm">عدد الحشرات<input required type="number" min="0" id="r_count" class="inp" value="0"></label>
-    <label class="text-sm">نوع الحشرة<input id="r_species" class="inp" placeholder="مثال: سوسة النخيل الحمراء"></label>
+    <label class="text-sm">نوع الحشرة${listSelect('r_species','species','',IS_ADMIN)}</label>
     <label class="text-sm">الحالة<select id="r_status" class="inp"><option value="normal">طبيعي</option><option value="low">إصابة منخفضة</option><option value="high">إصابة مرتفعة</option></select></label>
     <label class="text-sm">المفتش<input id="r_inspector" class="inp" value="${esc(localStorage.getItem('inspector')||'')}"></label>
     <label class="text-sm">ملاحظات<input id="r_notes" class="inp"></label>
@@ -193,11 +249,11 @@ async function renderTrap(code){
         :'<tr><td colspan="7" class="p-4 text-center text-slate-400">لا توجد قراءات بعد</td></tr>'}</tbody></table>
   </div>`;
 
-  bindLogin();
+  bindLogin(); bindListSelects(app);
   if($('#rf')) $('#rf').onsubmit = async e => {
     e.preventDefault();
     const insp = $('#r_inspector').value.trim(); localStorage.setItem('inspector', insp);
-    await DB.addReading(code,{ ts:new Date($('#r_date').value).getTime(), count:+$('#r_count').value, species:$('#r_species').value.trim(),
+    await DB.addReading(code,{ ts:new Date($('#r_date').value).getTime(), count:+$('#r_count').value, species:$('#r_species').value,
       status:$('#r_status').value, inspector:insp, notes:$('#r_notes').value.trim() });
     toast('تم حفظ القراءة ✅'); renderTrap(code);
   };
@@ -205,60 +261,27 @@ async function renderTrap(code){
 }
 
 /* ===================== لوحة التحكم ===================== */
-let editing = null;
+let TAB = 'traps', editing = null;
+let CUR_TRAPS = [];
+const SEL = new Set();
+const F = {q:'', type:'', loc:''};
+let PSIZE = 'm';
+
 async function renderAdmin(){
   const app=$('#app');
   if(auth && !CUR){ app.innerHTML = header('— لوحة التحكم') + loginBoxHtml(); bindLogin(); return; }
   if(auth && !IS_ADMIN){ app.innerHTML = header('— لوحة التحكم') + `<div class="bg-white rounded-xl shadow p-4 text-sm">هذا الحساب ليس مدير نظام.<br>لإعطائه صلاحية الإدارة أضف في Firebase: <b>admins ← <span dir="ltr">${esc(CUR.uid)}</span> = true</b></div>`; return; }
-  const traps = await DB.getTraps();
+  LISTS = await DB.getLists();
+  CUR_TRAPS = await DB.getTraps();
   const isFile = location.protocol==='file:';
+  const tabBtn = (k,l) => `<button data-tab="${k}" class="px-4 py-2 rounded-lg font-semibold ${TAB===k?'bg-green-700 text-white':'bg-white text-slate-700 shadow'}">${l}</button>`;
   app.innerHTML = header('— لوحة التحكم') + `
-  ${isFile?`<div class="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg mb-4 text-sm">
-    ⚠️ الملف مفتوح محلياً (file://). الـ QR لن يعمل من الموبايل إلا بعد رفع الملف على استضافة (Firebase Hosting / GitHub Pages) ووضع الرابط في "رابط التطبيق" بالأسفل.</div>`:''}
-
-  <form id="tf" class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
-    <div class="md:col-span-3 font-semibold">${editing?'✏️ تعديل مصيدة':'➕ إضافة مصيدة جديدة'}</div>
-    <label class="text-sm">كود المصيدة<input id="t_code" class="inp" placeholder="يُولَّد تلقائياً" ${editing?'readonly':''}></label>
-    <label class="text-sm">اسم المصيدة<input required id="t_name" class="inp"></label>
-    <label class="text-sm">النوع<input id="t_type" class="inp" placeholder="فرمونية / ضوئية / لاصقة"></label>
-    <label class="text-sm md:col-span-3">وصف الموقع (مزرعة / قطعة / صف)<input id="t_location" class="inp"></label>
-    <label class="text-sm">خط العرض<input id="t_lat" class="inp" dir="ltr"></label>
-    <label class="text-sm">خط الطول<input id="t_lng" class="inp" dir="ltr"></label>
-    <div class="flex items-end"><button type="button" id="gps" class="btn bg-blue-600 w-full">📍 موقعي الحالي</button></div>
-    <label class="text-sm md:col-span-3">ملاحظات<input id="t_notes" class="inp"></label>
-    <div class="md:col-span-3 flex gap-2">
-      <button class="btn bg-green-700 flex-1">${editing?'حفظ التعديل':'إضافة المصيدة'}</button>
-      ${editing?'<button type="button" id="cancel" class="btn bg-slate-500">إلغاء</button>':''}
-    </div>
-  </form>
-
-  <div class="bg-white rounded-xl shadow p-4 mb-4">
-    <div class="flex flex-wrap gap-2 justify-between items-center mb-3">
-      <div class="font-semibold">المصائد (${traps.length})</div>
-      <div class="flex gap-2 flex-wrap">
-        <button id="printAll" class="btn bg-slate-700 text-sm">🖨️ طباعة كل الـ QR</button>
-        <button id="csv" class="btn bg-slate-700 text-sm">⬇️ تصدير CSV</button>
-      </div>
-    </div>
-    <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-slate-500 text-right border-b">
-      <th class="p-2">الكود</th><th>الاسم</th><th>الموقع</th><th>النوع</th><th></th></tr></thead><tbody>
-      ${traps.length?traps.map(t=>`<tr class="border-b">
-        <td class="p-2 font-bold text-green-800">${esc(t.code)}</td><td>${esc(t.name)}</td><td>${esc(t.location||'')}</td><td>${esc(t.type||'')}</td>
-        <td class="whitespace-nowrap space-x-2 space-x-reverse">
-          <button class="text-green-700" data-qr="${esc(t.code)}">QR</button>
-          <a class="text-blue-700" href="?trap=${encodeURIComponent(t.code)}">فتح</a>
-          <button class="text-amber-700" data-edit="${esc(t.code)}">تعديل</button>
-          <button class="text-red-600" data-rm="${esc(t.code)}">حذف</button></td></tr>`).join('')
-        :'<tr><td colspan="5" class="p-4 text-center text-slate-400">أضف أول مصيدة من النموذج بالأعلى</td></tr>'}
-    </tbody></table></div>
+  ${isFile?`<div class="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg mb-4 text-sm">⚠️ الملف مفتوح محلياً (file://). الـ QR لن يعمل من الموبايل إلا بعد النشر.</div>`:''}
+  <div class="flex gap-2 mb-4 flex-wrap items-center">
+    ${tabBtn('traps','🪤 المصائد')}${tabBtn('map','🗺️ الخريطة الحرارية')}${tabBtn('lists','📋 القوائم')}
+    <button id="xlsx" class="btn bg-emerald-700 text-sm mr-auto">⬇️ تنزيل كل البيانات (Excel)</button>
   </div>
-
-  <div class="bg-white rounded-xl shadow p-4">
-    <label class="text-sm font-semibold">رابط التطبيق (الذي سيُشفَّر داخل الـ QR)
-      <input id="base" class="inp mt-1" dir="ltr" value="${esc(baseUrl())}"></label>
-    <div class="text-xs text-slate-500 mt-1">غيّره إلى رابط الاستضافة الفعلي قبل طباعة الأكواد. الـ QR يحمل كود المصيدة فقط، والبيانات تُقرأ حيّة من قاعدة البيانات، فتضيف قراءات بلا حدود دون تغيير الكود.</div>
-  </div>
-
+  <div id="tabBody"></div>
   <div id="modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-40 p-4">
     <div class="bg-white rounded-xl p-5 text-center max-w-xs w-full">
       <div id="m_title" class="font-bold text-green-800 text-lg mb-1"></div>
@@ -270,13 +293,73 @@ async function renderAdmin(){
       <button id="m_x" class="btn bg-slate-400 text-sm">إغلاق</button></div>
     </div>
   </div>`;
+  app.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ TAB=b.dataset.tab; renderAdmin(); });
+  $('#xlsx').onclick = exportXLSX;
+  if(TAB==='traps') tabTraps();
+  else if(TAB==='map') await tabMap();
+  else tabLists();
+}
 
-  // تعبئة النموذج عند التعديل
-  if(editing){ const t=traps.find(x=>x.code===editing);
-    if(t){ $('#t_code').value=t.code; $('#t_name').value=t.name||''; $('#t_type').value=t.type||''; $('#t_location').value=t.location||'';
-      $('#t_lat').value=t.lat||''; $('#t_lng').value=t.lng||''; $('#t_notes').value=t.notes||''; } }
-  else { const n = traps.reduce((m,t)=>{ const x=/(\d+)$/.exec(t.code); return x?Math.max(m,+x[1]):m; },0)+1;
-    $('#t_code').value = 'TRP-'+String(n).padStart(4,'0'); }
+/* ---------- تبويب المصائد ---------- */
+function tabTraps(){
+  const traps = CUR_TRAPS;
+  $('#tabBody').innerHTML = `
+  <form id="tf" class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div class="md:col-span-3 font-semibold">${editing?'✏️ تعديل مصيدة':'➕ إضافة مصيدة جديدة'}</div>
+    <label class="text-sm">كود المصيدة<input id="t_code" class="inp" placeholder="يُولَّد تلقائياً" ${editing?'readonly':''}></label>
+    <label class="text-sm">اسم المصيدة<span id="w_name"></span></label>
+    <label class="text-sm">النوع<span id="w_type"></span></label>
+    <label class="text-sm md:col-span-3">الموقع<span id="w_loc"></span></label>
+    <label class="text-sm">خط العرض<input id="t_lat" class="inp" dir="ltr"></label>
+    <label class="text-sm">خط الطول<input id="t_lng" class="inp" dir="ltr"></label>
+    <div class="flex items-end"><button type="button" id="gps" class="btn bg-blue-600 w-full">📍 موقعي الحالي</button></div>
+    <label class="text-sm md:col-span-3">ملاحظات<input id="t_notes" class="inp"></label>
+    <div class="md:col-span-3 flex gap-2">
+      <button class="btn bg-green-700 flex-1">${editing?'حفظ التعديل':'إضافة المصيدة'}</button>
+      ${editing?'<button type="button" id="cancel" class="btn bg-slate-500">إلغاء</button>':''}
+    </div>
+  </form>
+
+  <div class="bg-white rounded-xl shadow p-4 mb-4">
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+      <input id="f_q" class="inp" placeholder="🔎 بحث بالكود أو الاسم" value="${esc(F.q)}">
+      <select id="f_type" class="inp"><option value="">كل الأنواع</option>${uniq([...LISTS.types,...traps.map(t=>t.type)]).map(x=>`<option ${F.type===x?'selected':''}>${esc(x)}</option>`).join('')}</select>
+      <select id="f_loc" class="inp"><option value="">كل المواقع</option>${uniq([...LISTS.locations,...traps.map(t=>t.location)]).map(x=>`<option ${F.loc===x?'selected':''}>${esc(x)}</option>`).join('')}</select>
+      <div class="flex gap-2">
+        <select id="psize" class="inp"><option value="s" ${PSIZE==='s'?'selected':''}>ملصق صغير</option><option value="m" ${PSIZE==='m'?'selected':''}>ملصق متوسط</option><option value="l" ${PSIZE==='l'?'selected':''}>ملصق كبير</option></select>
+        <button id="printSel" class="btn bg-slate-700 text-sm whitespace-nowrap">🖨️ طباعة المحدد (<span id="selCount">0</span>)</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-slate-500 text-right border-b">
+      <th class="p-2 w-8"><input type="checkbox" id="chkAll"></th><th>الكود</th><th>الاسم</th><th>الموقع</th><th>النوع</th><th></th></tr></thead>
+      <tbody id="rows"></tbody></table></div>
+    <div id="rowsInfo" class="text-xs text-slate-500 mt-2"></div>
+  </div>
+
+  <div class="bg-white rounded-xl shadow p-4">
+    <label class="text-sm font-semibold">رابط التطبيق (الذي سيُشفَّر داخل الـ QR)
+      <input id="base" class="inp mt-1" dir="ltr" value="${esc(baseUrl())}"></label>
+    <div class="text-xs text-slate-500 mt-1">الـ QR يحمل كود المصيدة فقط، والبيانات تُقرأ حيّة من القاعدة.</div>
+  </div>`;
+
+  $('#w_name').innerHTML = listSelect('t_name','names','');
+  $('#w_type').innerHTML = listSelect('t_type','types','');
+  $('#w_loc').innerHTML  = listSelect('t_location','locations','');
+
+  if(editing){
+    const t = traps.find(x=>x.code===editing);
+    if(t){
+      $('#t_code').value=t.code;
+      $('#w_name').innerHTML = listSelect('t_name','names',t.name||'');
+      $('#w_type').innerHTML = listSelect('t_type','types',t.type||'');
+      $('#w_loc').innerHTML  = listSelect('t_location','locations',t.location||'');
+      $('#t_lat').value=t.lat||''; $('#t_lng').value=t.lng||''; $('#t_notes').value=t.notes||'';
+    }
+  } else {
+    const n = traps.reduce((m,t)=>{ const x=/(\d+)$/.exec(t.code); return x?Math.max(m,+x[1]):m; },0)+1;
+    $('#t_code').value = 'TRP-'+String(n).padStart(4,'0');
+  }
+  bindListSelects($('#tf'));
 
   $('#gps').onclick = () => navigator.geolocation
     ? navigator.geolocation.getCurrentPosition(p=>{ $('#t_lat').value=p.coords.latitude.toFixed(6); $('#t_lng').value=p.coords.longitude.toFixed(6); toast('تم تحديد الموقع'); },
@@ -286,22 +369,56 @@ async function renderAdmin(){
   $('#tf').onsubmit = async e => {
     e.preventDefault();
     const code = cleanCode($('#t_code').value);
+    const name = $('#t_name').value;
     if(!code) return toast('الكود مطلوب');
+    if(!name || name==='__new__') return toast('اختر اسم المصيدة من القائمة');
     if(!editing && await DB.getTrap(code)) return toast('هذا الكود مستخدم بالفعل');
     const old = editing ? await DB.getTrap(code) : null;
-    await DB.saveTrap({ code, name:$('#t_name').value.trim(), type:$('#t_type').value.trim(), location:$('#t_location').value.trim(),
+    await DB.saveTrap({ code, name, type:$('#t_type').value, location:$('#t_location').value,
       lat:$('#t_lat').value.trim(), lng:$('#t_lng').value.trim(), notes:$('#t_notes').value.trim(), createdAt: old?.createdAt || Date.now() });
     editing=null; toast('تم الحفظ ✅'); renderAdmin();
   };
   if(editing) $('#cancel').onclick=()=>{ editing=null; renderAdmin(); };
-
   $('#base').onchange = e => { localStorage.setItem('baseUrl', e.target.value.trim()); toast('تم حفظ الرابط'); };
 
-  app.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{ editing=b.dataset.edit; renderAdmin(); window.scrollTo(0,0); });
-  app.querySelectorAll('[data-rm]').forEach(b=>b.onclick=async()=>{ if(confirm('حذف المصيدة وكل قراءاتها؟')){ await DB.deleteTrap(b.dataset.rm); renderAdmin(); } });
-  app.querySelectorAll('[data-qr]').forEach(b=>b.onclick=()=>showQR(traps.find(t=>t.code===b.dataset.qr)));
-  $('#printAll').onclick = () => printLabels(traps);
-  $('#csv').onclick = exportCSV;
+  $('#f_q').oninput = e => { F.q=e.target.value; drawRows(); };
+  $('#f_type').onchange = e => { F.type=e.target.value; drawRows(); };
+  $('#f_loc').onchange = e => { F.loc=e.target.value; drawRows(); };
+  $('#psize').onchange = e => { PSIZE=e.target.value; };
+  $('#printSel').onclick = () => printLabels(CUR_TRAPS.filter(t=>SEL.has(t.code)), PSIZE);
+  $('#chkAll').onchange = e => { visibleTraps().forEach(t=> e.target.checked ? SEL.add(t.code) : SEL.delete(t.code)); drawRows(); };
+
+  $('#m_x').onclick=()=>{ const m=$('#modal'); m.classList.add('hidden'); m.classList.remove('flex'); };
+  drawRows();
+}
+
+function visibleTraps(){
+  const q = F.q.trim().toLowerCase();
+  return CUR_TRAPS.filter(t => (!F.type||t.type===F.type) && (!F.loc||t.location===F.loc) &&
+    (!q || (t.code+' '+(t.name||'')).toLowerCase().includes(q)));
+}
+function updSel(){
+  const el=$('#selCount'); if(el) el.textContent = SEL.size;
+  const vis = visibleTraps(); const all=$('#chkAll');
+  if(all) all.checked = vis.length>0 && vis.every(t=>SEL.has(t.code));
+}
+function drawRows(){
+  const vis = visibleTraps();
+  $('#rows').innerHTML = vis.length ? vis.map(t=>`<tr class="border-b">
+    <td class="p-2"><input type="checkbox" data-sel="${esc(t.code)}" ${SEL.has(t.code)?'checked':''}></td>
+    <td class="font-bold text-green-800">${esc(t.code)}</td><td>${esc(t.name)}</td><td>${esc(t.location||'')}</td><td>${esc(t.type||'')}</td>
+    <td class="whitespace-nowrap space-x-2 space-x-reverse">
+      <button class="text-green-700" data-qr="${esc(t.code)}">QR</button>
+      <a class="text-blue-700" href="?trap=${encodeURIComponent(t.code)}">فتح</a>
+      <button class="text-amber-700" data-edit="${esc(t.code)}">تعديل</button>
+      <button class="text-red-600" data-rm="${esc(t.code)}">حذف</button></td></tr>`).join('')
+    : '<tr><td colspan="6" class="p-4 text-center text-slate-400">لا توجد مصائد مطابقة</td></tr>';
+  $('#rowsInfo').textContent = `المعروض ${vis.length} من ${CUR_TRAPS.length} مصيدة`;
+  document.querySelectorAll('[data-sel]').forEach(c=>c.onchange=()=>{ c.checked?SEL.add(c.dataset.sel):SEL.delete(c.dataset.sel); updSel(); });
+  document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{ editing=b.dataset.edit; tabTraps(); window.scrollTo(0,0); });
+  document.querySelectorAll('[data-rm]').forEach(b=>b.onclick=async()=>{ if(confirm('حذف المصيدة وكل قراءاتها؟')){ await DB.deleteTrap(b.dataset.rm); SEL.delete(b.dataset.rm); renderAdmin(); } });
+  document.querySelectorAll('[data-qr]').forEach(b=>b.onclick=()=>showQR(CUR_TRAPS.find(t=>t.code===b.dataset.qr)));
+  updSel();
 }
 
 function showQR(t){
@@ -310,27 +427,132 @@ function showQR(t){
   makeQR($('#m_qr'), trapUrl(t.code), 220); $('#m_url').textContent=trapUrl(t.code);
   $('#m_x').onclick=()=>{ m.classList.add('hidden'); m.classList.remove('flex'); };
   $('#m_dl').onclick=async()=>downloadFile(`QR-${t.code}.png`, await qrDataUrl(trapUrl(t.code)));
-  $('#m_pr').onclick=()=>printLabels([t]);
+  $('#m_pr').onclick=()=>printLabels([t], PSIZE);
 }
 
-function printLabels(traps){
-  if(!traps.length) return toast('لا توجد مصائد');
-  const pa=$('#printArea'); pa.innerHTML='';
-  traps.forEach(t=>{
+/* ---------- طباعة الملصقات (QR + الكود تحته) ---------- */
+const PSIZES = { s:{qr:90, cols:5}, m:{qr:130, cols:4}, l:{qr:180, cols:3} };
+function printLabels(list, size='m'){
+  if(!list.length) return toast('حدد مصيدة واحدة على الأقل');
+  const {qr,cols} = PSIZES[size] || PSIZES.m;
+  const pa=$('#printArea'); pa.innerHTML=''; pa.style.gridTemplateColumns = `repeat(${cols},1fr)`;
+  list.forEach(t=>{
     const d=document.createElement('div'); d.className='label';
-    d.innerHTML=`<div style="font-weight:bold;font-size:14px">${esc(t.code)}</div><div style="font-size:11px">${esc(t.name)}</div><div class="q" style="margin:4px 0"></div><div style="font-size:9px">${esc(t.location||'')}</div>`;
-    pa.appendChild(d); makeQR(d.querySelector('.q'), trapUrl(t.code), 150);
+    d.innerHTML = `<div class="q"></div>
+      <div style="font-weight:bold;font-size:${qr>=130?16:12}px;margin-top:3px;letter-spacing:.5px">${esc(t.code)}</div>
+      <div style="font-size:${qr>=130?11:9}px">${esc(t.name||'')}</div>
+      <div style="font-size:${qr>=130?10:8}px;color:#444">${esc(t.location||'')}</div>`;
+    pa.appendChild(d); makeQR(d.querySelector('.q'), trapUrl(t.code), qr);
   });
-  setTimeout(()=>window.print(), 300);
+  setTimeout(()=>window.print(), 250 + list.length*15);
 }
 
-async function exportCSV(){
-  const traps = await DB.getTraps(); const rs = await DB.allReadings(); const tm = Object.fromEntries(traps.map(t=>[t.code,t]));
-  const q = v => '"'+String(v??'').replace(/"/g,'""')+'"';
-  const rows = [['كود المصيدة','الاسم','الموقع','خط العرض','خط الطول','التاريخ','العدد','النوع','الحالة','المفتش','ملاحظات']];
-  rs.sort((a,b)=>a.code.localeCompare(b.code)||a.ts-b.ts).forEach(r=>{ const t=tm[r.code]||{};
-    rows.push([r.code,t.name,t.location,t.lat,t.lng,new Date(r.ts).toISOString(),r.count,r.species,(STATUS[r.status]||STATUS.normal)[0],r.inspector,r.notes]); });
-  downloadFile('traps-readings.csv','\ufeff'+rows.map(r=>r.map(q).join(',')).join('\n'),'text/csv;charset=utf-8');
+/* ---------- تبويب القوائم ---------- */
+function tabLists(){
+  $('#tabBody').innerHTML = `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">` + Object.keys(LIST_TITLES).map(k=>`
+    <div class="bg-white rounded-xl shadow p-4">
+      <div class="font-semibold mb-2">${LIST_TITLES[k]}</div>
+      <div class="flex gap-2 mb-3"><input class="inp" id="li_${k}" placeholder="إضافة عنصر جديد">
+        <button class="btn bg-green-700" data-add="${k}">إضافة</button></div>
+      <div class="flex flex-wrap gap-2">${LISTS[k].map((x,i)=>`<span class="bg-green-50 border border-green-200 rounded-full px-3 py-1 text-sm">${esc(x)}
+        <button class="text-red-600 mr-1" data-rmi="${k}|${i}">×</button></span>`).join('')||'<span class="text-slate-400 text-sm">فارغة</span>'}</div>
+    </div>`).join('') + `</div>
+    <div class="text-xs text-slate-500 mt-3">القيم هنا هي اللي بتظهر في قوائم الاختيار عند إضافة مصيدة أو قراءة، عشان توحيد الكتابة وسهولة التحليل. حذف عنصر لا يغيّر السجلات القديمة.</div>`;
+  document.querySelectorAll('[data-add]').forEach(b=>b.onclick=async()=>{
+    const k=b.dataset.add, v=$('#li_'+k).value.trim(); if(!v) return;
+    if(!LISTS[k].includes(v)){ LISTS[k]=[...LISTS[k],v]; await DB.saveList(k,LISTS[k]); }
+    tabLists();
+  });
+  document.querySelectorAll('[data-rmi]').forEach(b=>b.onclick=async()=>{
+    const [k,i]=b.dataset.rmi.split('|'); LISTS[k]=LISTS[k].filter((_,j)=>j!==+i); await DB.saveList(k,LISTS[k]); tabLists();
+  });
+}
+
+/* ---------- الخريطة الحرارية ---------- */
+let MAPDATA=null, map=null, heatLayer=null, markerLayer=null;
+const MF = {trap:'', type:'', loc:'', from:'', to:'', metric:'total'};
+
+async function tabMap(){
+  $('#tabBody').innerHTML = '<p>جاري تحميل السجلات...</p>';
+  MAPDATA = { traps: CUR_TRAPS, readings: await DB.allReadings() };
+  const T = MAPDATA.traps;
+  $('#tabBody').innerHTML = `
+  <div class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-2 md:grid-cols-6 gap-2">
+    <label class="text-xs">المصيدة<select class="inp" data-mf="trap"><option value="">الكل</option>${T.map(t=>`<option value="${esc(t.code)}" ${MF.trap===t.code?'selected':''}>${esc(t.code)} — ${esc(t.name||'')}</option>`).join('')}</select></label>
+    <label class="text-xs">النوع<select class="inp" data-mf="type"><option value="">الكل</option>${uniq(T.map(t=>t.type)).map(x=>`<option ${MF.type===x?'selected':''}>${esc(x)}</option>`).join('')}</select></label>
+    <label class="text-xs">المكان<select class="inp" data-mf="loc"><option value="">الكل</option>${uniq(T.map(t=>t.location)).map(x=>`<option ${MF.loc===x?'selected':''}>${esc(x)}</option>`).join('')}</select></label>
+    <label class="text-xs">من تاريخ<input type="date" class="inp" data-mf="from" value="${MF.from}"></label>
+    <label class="text-xs">إلى تاريخ<input type="date" class="inp" data-mf="to" value="${MF.to}"></label>
+    <label class="text-xs">المقياس<select class="inp" data-mf="metric"><option value="total" ${MF.metric==='total'?'selected':''}>إجمالي الأعداد</option><option value="avg" ${MF.metric==='avg'?'selected':''}>متوسط القراءة</option></select></label>
+  </div>
+  <div id="mapInfo" class="text-sm text-slate-600 mb-2"></div>
+  <div id="map" dir="ltr" class="mb-4"></div>
+  <div class="bg-white rounded-xl shadow p-4 overflow-x-auto">
+    <div class="font-semibold mb-2">ترتيب المصائد حسب الإصابة</div>
+    <table class="w-full text-sm"><thead><tr class="text-slate-500 text-right border-b"><th class="p-2">الكود</th><th>الاسم</th><th>النوع</th><th>الموقع</th><th>القراءات</th><th>الإجمالي</th><th>المتوسط</th><th>آخر قراءة</th></tr></thead>
+    <tbody id="mapRows"></tbody></table>
+  </div>`;
+  document.querySelectorAll('[data-mf]').forEach(el=>el.onchange=()=>{ MF[el.dataset.mf]=el.value; updateHeat(true); });
+  if(map){ map.remove(); map=null; }
+  map = L.map('map').setView([27,30],6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+  updateHeat(true);
+}
+
+function mapStats(){
+  const {traps,readings}=MAPDATA;
+  const from = MF.from ? new Date(MF.from+'T00:00:00').getTime() : -Infinity;
+  const to   = MF.to   ? new Date(MF.to+'T23:59:59').getTime() : Infinity;
+  const sel = traps.filter(t=>(!MF.trap||t.code===MF.trap)&&(!MF.type||t.type===MF.type)&&(!MF.loc||t.location===MF.loc));
+  const by={}; readings.forEach(r=>{ if(r.ts>=from && r.ts<=to) (by[r.code]=by[r.code]||[]).push(r); });
+  return sel.map(t=>{
+    const rs=by[t.code]||[]; const total=rs.reduce((a,r)=>a+(+r.count||0),0);
+    return {t, n:rs.length, total, avg: rs.length?total/rs.length:0, last: rs.length?Math.max(...rs.map(r=>r.ts)):0};
+  });
+}
+
+function updateHeat(fit){
+  if(!map) return;
+  const stats = mapStats();
+  const w = s => MF.metric==='avg' ? s.avg : s.total;
+  const withXY = stats.filter(s=>s.t.lat && s.t.lng && !isNaN(+s.t.lat) && !isNaN(+s.t.lng));
+  const maxW = Math.max(0,...withXY.map(w));
+  if(heatLayer) map.removeLayer(heatLayer);
+  if(markerLayer) map.removeLayer(markerLayer);
+  const pts = withXY.filter(s=>w(s)>0).map(s=>[+s.t.lat,+s.t.lng,w(s)]);
+  heatLayer = L.heatLayer(pts,{radius:40,blur:30,maxZoom:17,max:maxW||1,
+    gradient:{0.2:'#2c7bb6',0.4:'#abd9e9',0.6:'#ffffbf',0.8:'#fdae61',1:'#d7191c'}}).addTo(map);
+  markerLayer = L.layerGroup(withXY.map(s=>L.circleMarker([+s.t.lat,+s.t.lng],{radius:6,color:'#111',weight:1,fillColor:'#fff',fillOpacity:.9})
+    .bindPopup(`<div dir="rtl"><b>${esc(s.t.code)}</b> — ${esc(s.t.name||'')}<br>النوع: ${esc(s.t.type||'—')}<br>الموقع: ${esc(s.t.location||'—')}<br>عدد القراءات: ${s.n}<br>الإجمالي: ${s.total}<br>المتوسط: ${s.avg.toFixed(1)}</div>`))).addTo(map);
+  if(fit && withXY.length){ map.fitBounds(L.latLngBounds(withXY.map(s=>[+s.t.lat,+s.t.lng])),{padding:[50,50],maxZoom:16}); }
+  setTimeout(()=>map.invalidateSize(),50);
+  const noXY = stats.length - withXY.length;
+  $('#mapInfo').textContent = `المصائد المعروضة: ${withXY.length} من ${stats.length}` + (noXY?` — ${noXY} بدون إحداثيات (غير ظاهرة على الخريطة)`:'') + ` — المقياس: ${MF.metric==='avg'?'متوسط القراءة':'إجمالي الأعداد'}`;
+  $('#mapRows').innerHTML = [...stats].sort((a,b)=>w(b)-w(a)).map(s=>`<tr class="border-b">
+    <td class="p-2 font-bold text-green-800">${esc(s.t.code)}</td><td>${esc(s.t.name||'')}</td><td>${esc(s.t.type||'')}</td><td>${esc(s.t.location||'')}</td>
+    <td>${s.n}</td><td class="font-bold">${s.total}</td><td>${s.avg.toFixed(1)}</td><td>${s.last?fmtDate(s.last):'—'}</td></tr>`).join('')
+    || '<tr><td colspan="8" class="p-4 text-center text-slate-400">لا توجد بيانات</td></tr>';
+}
+
+/* ---------- تنزيل كل البيانات Excel ---------- */
+async function exportXLSX(){
+  const traps = await DB.getTraps(); const rs = await DB.allReadings();
+  const tm = Object.fromEntries(traps.map(t=>[t.code,t]));
+  const sheetTraps = traps.map(t=>({'كود المصيدة':t.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','خط العرض':t.lat||'','خط الطول':t.lng||'','ملاحظات':t.notes||'','تاريخ الإضافة':fmtISO(t.createdAt)}));
+  rs.sort((a,b)=>a.code.localeCompare(b.code)||a.ts-b.ts);
+  const sheetReads = rs.map(r=>{ const t=tm[r.code]||{}; return {
+    'كود المصيدة':r.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','خط العرض':t.lat||'','خط الطول':t.lng||'',
+    'التاريخ':fmtISO(r.ts),'العدد':+r.count||0,'نوع الحشرة':r.species||'','الحالة':(STATUS[r.status]||STATUS.normal)[0],'المفتش':r.inspector||'','ملاحظات':r.notes||''}; });
+  const sheetSum = traps.map(t=>{ const x=rs.filter(r=>r.code===t.code); const total=x.reduce((a,r)=>a+(+r.count||0),0);
+    return {'كود المصيدة':t.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','عدد القراءات':x.length,'إجمالي الحشرات':total,'المتوسط':x.length?+(total/x.length).toFixed(2):0,'آخر قراءة':x.length?fmtISO(Math.max(...x.map(r=>r.ts))):''}; });
+  const wb = XLSX.utils.book_new();
+  const add = (rows,name,empty) => { const ws = XLSX.utils.json_to_sheet(rows.length?rows:[empty]); ws['!cols']=Object.keys(rows[0]||empty).map(()=>({wch:18})); XLSX.utils.book_append_sheet(wb,ws,name); };
+  add(sheetReads,'القراءات',{'لا توجد قراءات':''});
+  add(sheetSum,'ملخص المصائد',{'لا توجد مصائد':''});
+  add(sheetTraps,'المصائد',{'لا توجد مصائد':''});
+  wb.Workbook = {Views:[{RTL:true}]};
+  XLSX.writeFile(wb, 'traps-data-'+new Date().toISOString().slice(0,10)+'.xlsx');
+  toast('تم تنزيل ملف Excel');
 }
 
 /* ===================== تشغيل ===================== */
