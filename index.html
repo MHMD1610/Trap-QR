@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <style>
   body{font-family:Tahoma,Arial,sans-serif;background:#f1f5f0}
   #printArea{display:none}
@@ -45,9 +46,10 @@ const FIREBASE_CONFIG = {
 <script>
 /* ===================== طبقة التخزين ===================== */
 const useFirebase = !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL);
-let DB;
+let DB, auth = null, CUR = null, IS_ADMIN = false;
 if (useFirebase) {
   firebase.initializeApp(FIREBASE_CONFIG);
+  auth = firebase.auth();
   const rdb = firebase.database();
   const toArr = o => o ? Object.entries(o).map(([k,v]) => ({...v, _id:k})) : [];
   DB = {
@@ -58,6 +60,7 @@ if (useFirebase) {
     async getReadings(c){ const s = await rdb.ref('readings/'+c).once('value'); return toArr(s.val()).sort((a,b)=>b.ts-a.ts); },
     async addReading(c,r){ await rdb.ref('readings/'+c).push(r); },
     async deleteReading(c,id){ await rdb.ref(`readings/${c}/${id}`).remove(); },
+    async isAdmin(u){ try{ const s = await rdb.ref('admins/'+u).once('value'); return s.val()===true; }catch(e){ return false; } },
     async allReadings(){ const s = await rdb.ref('readings').once('value'); const o=s.val()||{}; let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; }
   };
 } else {
@@ -72,6 +75,7 @@ if (useFirebase) {
     async getReadings(c){ return toArr(L('readings')[c]).sort((a,b)=>b.ts-a.ts); },
     async addReading(c,r){ const o=L('readings'); o[c]=o[c]||{}; o[c]['r'+Date.now()+Math.random().toString(36).slice(2,6)]=r; S('readings',o); },
     async deleteReading(c,id){ const o=L('readings'); if(o[c]) delete o[c][id]; S('readings',o); },
+    async isAdmin(){ return true; },
     async allReadings(){ const o=L('readings'); let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; }
   };
 }
@@ -99,10 +103,25 @@ function downloadFile(name, content, type){ const a=document.createElement('a');
 const params = new URLSearchParams(location.search);
 const trapParam = params.get('trap');
 
+function loginBoxHtml(){
+  return `<form id="lf" class="bg-white rounded-xl shadow p-4 grid gap-3 max-w-sm mx-auto my-4">
+    <div class="font-semibold">🔐 تسجيل دخول المفتش</div>
+    <input required type="email" id="l_email" class="inp" dir="ltr" placeholder="البريد الإلكتروني">
+    <input required type="password" id="l_pass" class="inp" dir="ltr" placeholder="كلمة المرور">
+    <button class="btn bg-green-700">دخول</button>
+    <div id="l_err" class="text-red-600 text-sm"></div></form>`;
+}
+function bindLogin(){
+  const f=$('#lf'); if(!f) return;
+  f.onsubmit = async e => { e.preventDefault();
+    try{ await auth.signInWithEmailAndPassword($('#l_email').value.trim(), $('#l_pass').value); }
+    catch(err){ $('#l_err').textContent='بيانات الدخول غير صحيحة'; } };
+}
 function header(sub=''){
   return `<div class="flex items-center justify-between mb-4 flex-wrap gap-2">
     <h1 class="text-xl md:text-2xl font-bold text-green-800">🪤 نظام مصائد الحشرات ${sub}</h1>
     <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
+    ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(CUR.email)})</button>`:''}
   </div>`;
 }
 
@@ -151,7 +170,7 @@ async function renderTrap(code){
       <div class="w-full bg-green-500 rounded-t" style="height:${Math.max(4,(+r.count||0)/max*80)}%"></div></div>`).join('')}</div>
   </div>`:''}
 
-  <form id="rf" class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+  ${(!auth||CUR)?`<form id="rf" class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-2 gap-3">
     <div class="md:col-span-2 font-semibold">➕ إضافة قراءة جديدة</div>
     <label class="text-sm">التاريخ والوقت<input required type="datetime-local" id="r_date" class="inp" value="${now}"></label>
     <label class="text-sm">عدد الحشرات<input required type="number" min="0" id="r_count" class="inp" value="0"></label>
@@ -160,7 +179,7 @@ async function renderTrap(code){
     <label class="text-sm">المفتش<input id="r_inspector" class="inp" value="${esc(localStorage.getItem('inspector')||'')}"></label>
     <label class="text-sm">ملاحظات<input id="r_notes" class="inp"></label>
     <button class="btn bg-green-700 md:col-span-2">حفظ القراءة</button>
-  </form>
+  </form>`:`<div class="mb-4"><div class="text-center text-sm text-slate-600">سجّل الدخول لإضافة قراءة جديدة</div>${loginBoxHtml()}</div>`}
 
   <div class="bg-white rounded-xl shadow p-4 overflow-x-auto">
     <div class="font-semibold mb-2">سجل القراءات</div>
@@ -170,11 +189,12 @@ async function renderTrap(code){
         <td class="p-2 whitespace-nowrap">${fmtDate(r.ts)}</td><td class="font-bold">${esc(r.count)}</td><td>${esc(r.species||'')}</td>
         <td><span class="px-2 py-0.5 rounded text-xs ${(STATUS[r.status]||STATUS.normal)[1]}">${(STATUS[r.status]||STATUS.normal)[0]}</span></td>
         <td>${esc(r.inspector||'')}</td><td>${esc(r.notes||'')}</td>
-        <td><button class="text-red-600 text-xs" data-del="${esc(r._id)}">حذف</button></td></tr>`).join('')
+        <td>${IS_ADMIN?`<button class="text-red-600 text-xs" data-del="${esc(r._id)}">حذف</button>`:''}</td></tr>`).join('')
         :'<tr><td colspan="7" class="p-4 text-center text-slate-400">لا توجد قراءات بعد</td></tr>'}</tbody></table>
   </div>`;
 
-  $('#rf').onsubmit = async e => {
+  bindLogin();
+  if($('#rf')) $('#rf').onsubmit = async e => {
     e.preventDefault();
     const insp = $('#r_inspector').value.trim(); localStorage.setItem('inspector', insp);
     await DB.addReading(code,{ ts:new Date($('#r_date').value).getTime(), count:+$('#r_count').value, species:$('#r_species').value.trim(),
@@ -187,7 +207,10 @@ async function renderTrap(code){
 /* ===================== لوحة التحكم ===================== */
 let editing = null;
 async function renderAdmin(){
-  const app=$('#app'); const traps = await DB.getTraps();
+  const app=$('#app');
+  if(auth && !CUR){ app.innerHTML = header('— لوحة التحكم') + loginBoxHtml(); bindLogin(); return; }
+  if(auth && !IS_ADMIN){ app.innerHTML = header('— لوحة التحكم') + `<div class="bg-white rounded-xl shadow p-4 text-sm">هذا الحساب ليس مدير نظام.<br>لإعطائه صلاحية الإدارة أضف في Firebase: <b>admins ← <span dir="ltr">${esc(CUR.uid)}</span> = true</b></div>`; return; }
+  const traps = await DB.getTraps();
   const isFile = location.protocol==='file:';
   app.innerHTML = header('— لوحة التحكم') + `
   ${isFile?`<div class="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg mb-4 text-sm">
@@ -311,7 +334,10 @@ async function exportCSV(){
 }
 
 /* ===================== تشغيل ===================== */
-trapParam ? renderTrap(cleanCode(trapParam)) : renderAdmin();
+function route(){ trapParam ? renderTrap(cleanCode(trapParam)) : renderAdmin(); }
+if(auth){
+  auth.onAuthStateChanged(async u => { CUR=u; IS_ADMIN = u ? await DB.isAdmin(u.uid) : false; route(); });
+} else { IS_ADMIN = true; route(); }
 </script>
 </body>
 </html>
