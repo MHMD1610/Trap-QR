@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>نظام QR لمصائد الحشرات</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+  body{font-family:Tahoma,Arial,sans-serif;background:#f1f5f0}
+  #printArea{display:none}
+  @media print{
+    body>*:not(#printArea){display:none!important}
+    #printArea{display:grid!important;grid-template-columns:repeat(3,1fr);gap:8mm;padding:8mm}
+    .label{border:1px dashed #333;padding:6px;text-align:center;page-break-inside:avoid}
+    .label img,.label canvas{margin:0 auto}
+  }
+  .inp{width:100%;border:1px solid #cbd5e1;border-radius:.5rem;padding:.5rem .75rem;background:#fff}
+  .inp:focus{outline:2px solid #16a34a;border-color:#16a34a}
+  .btn{padding:.5rem 1rem;border-radius:.5rem;font-weight:600;color:#fff;cursor:pointer}
+</style>
+</head>
+<body>
+
+<!-- ===================== إعدادات Firebase =====================
+     ضع بيانات مشروعك هنا. لو تُركت فارغة يعمل النظام محلياً (تجريبي) على المتصفح فقط. -->
+<script>
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyB3t4U11ZSwSdhF4R6O_Qdkv6EoOjSEdJI",
+  authDomain: "trap-qr.firebaseapp.com",
+  databaseURL: "https://trap-qr-default-rtdb.firebaseio.com",
+  projectId: "trap-qr",
+  storageBucket: "trap-qr.firebasestorage.app",
+  messagingSenderId: "211542356923",
+  appId: "1:211542356923:web:3c1107516113b90893ca9e"
+};
+</script>
+
+<div id="app" class="max-w-5xl mx-auto p-3 md:p-6"></div>
+<div id="printArea"></div>
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-4 py-2 rounded-lg hidden z-50"></div>
+
+<script>
+/* ===================== طبقة التخزين ===================== */
+const useFirebase = !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL);
+let DB;
+if (useFirebase) {
+  firebase.initializeApp(FIREBASE_CONFIG);
+  const rdb = firebase.database();
+  const toArr = o => o ? Object.entries(o).map(([k,v]) => ({...v, _id:k})) : [];
+  DB = {
+    async getTraps(){ const s = await rdb.ref('traps').once('value'); return toArr(s.val()).sort((a,b)=>a.code.localeCompare(b.code)); },
+    async getTrap(c){ const s = await rdb.ref('traps/'+c).once('value'); return s.val(); },
+    async saveTrap(t){ await rdb.ref('traps/'+t.code).set(t); },
+    async deleteTrap(c){ await rdb.ref('traps/'+c).remove(); await rdb.ref('readings/'+c).remove(); },
+    async getReadings(c){ const s = await rdb.ref('readings/'+c).once('value'); return toArr(s.val()).sort((a,b)=>b.ts-a.ts); },
+    async addReading(c,r){ await rdb.ref('readings/'+c).push(r); },
+    async deleteReading(c,id){ await rdb.ref(`readings/${c}/${id}`).remove(); },
+    async allReadings(){ const s = await rdb.ref('readings').once('value'); const o=s.val()||{}; let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; }
+  };
+} else {
+  const L = k => JSON.parse(localStorage.getItem(k) || '{}');
+  const S = (k,v) => localStorage.setItem(k, JSON.stringify(v));
+  const toArr = o => Object.entries(o||{}).map(([k,v]) => ({...v, _id:k}));
+  DB = {
+    async getTraps(){ return Object.values(L('traps')).sort((a,b)=>a.code.localeCompare(b.code)); },
+    async getTrap(c){ return L('traps')[c] || null; },
+    async saveTrap(t){ const o=L('traps'); o[t.code]=t; S('traps',o); },
+    async deleteTrap(c){ const o=L('traps'); delete o[c]; S('traps',o); const r=L('readings'); delete r[c]; S('readings',r); },
+    async getReadings(c){ return toArr(L('readings')[c]).sort((a,b)=>b.ts-a.ts); },
+    async addReading(c,r){ const o=L('readings'); o[c]=o[c]||{}; o[c]['r'+Date.now()+Math.random().toString(36).slice(2,6)]=r; S('readings',o); },
+    async deleteReading(c,id){ const o=L('readings'); if(o[c]) delete o[c][id]; S('readings',o); },
+    async allReadings(){ const o=L('readings'); let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; }
+  };
+}
+
+/* ===================== أدوات ===================== */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const cleanCode = s => String(s).trim().toUpperCase().replace(/[.#$\[\]\/\s]+/g,'-');
+const fmtDate = ts => new Date(ts).toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'});
+function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'),2200); }
+function baseUrl(){ return localStorage.getItem('baseUrl') || (location.origin + location.pathname); }
+function trapUrl(code){ return baseUrl() + '?trap=' + encodeURIComponent(code); }
+function mapUrl(t){ return (t.lat && t.lng) ? `https://www.google.com/maps?q=${t.lat},${t.lng}` : ''; }
+const STATUS = {normal:['طبيعي','bg-green-100 text-green-800'], low:['إصابة منخفضة','bg-yellow-100 text-yellow-800'], high:['إصابة مرتفعة','bg-red-100 text-red-800']};
+
+function makeQR(el, text, size=220){
+  el.innerHTML=''; new QRCode(el,{text,width:size,height:size,correctLevel:QRCode.CorrectLevel.M});
+}
+function qrDataUrl(text,size=400){
+  return new Promise(res=>{ const d=document.createElement('div'); new QRCode(d,{text,width:size,height:size,correctLevel:QRCode.CorrectLevel.M});
+    setTimeout(()=>{ const c=d.querySelector('canvas'); res(c?c.toDataURL('image/png'):d.querySelector('img').src); },80); });
+}
+function downloadFile(name, content, type){ const a=document.createElement('a'); a.href = content.startsWith('data:')?content:URL.createObjectURL(new Blob([content],{type})); a.download=name; a.click(); }
+
+const params = new URLSearchParams(location.search);
+const trapParam = params.get('trap');
+
+function header(sub=''){
+  return `<div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+    <h1 class="text-xl md:text-2xl font-bold text-green-800">🪤 نظام مصائد الحشرات ${sub}</h1>
+    <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
+  </div>`;
+}
+
+/* ===================== صفحة المصيدة (بعد السكان) ===================== */
+async function renderTrap(code){
+  const app=$('#app'); app.innerHTML = header() + '<p>جاري التحميل...</p>';
+  const t = await DB.getTrap(code);
+  if(!t){ app.innerHTML = header()+`<div class="bg-white p-6 rounded-xl">المصيدة <b>${esc(code)}</b> غير موجودة. <a class="text-green-700 underline" href="${location.pathname}">لوحة التحكم</a></div>`; return; }
+  const readings = await DB.getReadings(code);
+  const counts = readings.map(r=>+r.count||0);
+  const total = counts.reduce((a,b)=>a+b,0);
+  const avg = counts.length ? (total/counts.length).toFixed(1) : 0;
+  const last12 = readings.slice(0,12).reverse();
+  const max = Math.max(1,...last12.map(r=>+r.count||0));
+  const now = new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+
+  app.innerHTML = header() + `
+  <div class="bg-white rounded-xl shadow p-4 mb-4">
+    <div class="flex justify-between items-start flex-wrap gap-2">
+      <div>
+        <div class="text-sm text-slate-500">كود المصيدة</div>
+        <div class="text-2xl font-bold text-green-800">${esc(t.code)}</div>
+        <div class="font-semibold mt-1">${esc(t.name||'')}</div>
+      </div>
+      <a href="${location.pathname}" class="text-sm text-green-700 underline">لوحة التحكم</a>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3 text-sm">
+      <div>📍 الموقع: ${esc(t.location||'—')}</div>
+      <div>🏷️ النوع: ${esc(t.type||'—')}</div>
+      <div>🧭 الإحداثيات: ${t.lat&&t.lng?`${esc(t.lat)}, ${esc(t.lng)}`:'—'}</div>
+      <div>📝 ملاحظات: ${esc(t.notes||'—')}</div>
+    </div>
+    ${mapUrl(t)?`<a target="_blank" href="${mapUrl(t)}" class="btn bg-blue-600 inline-block mt-3 text-sm">فتح الموقع على الخريطة</a>`:''}
+  </div>
+
+  <div class="grid grid-cols-3 gap-2 mb-4 text-center">
+    <div class="bg-white rounded-xl shadow p-3"><div class="text-xs text-slate-500">عدد القراءات</div><div class="text-xl font-bold">${readings.length}</div></div>
+    <div class="bg-white rounded-xl shadow p-3"><div class="text-xs text-slate-500">إجمالي الحشرات</div><div class="text-xl font-bold">${total}</div></div>
+    <div class="bg-white rounded-xl shadow p-3"><div class="text-xs text-slate-500">المتوسط</div><div class="text-xl font-bold">${avg}</div></div>
+  </div>
+
+  ${last12.length?`<div class="bg-white rounded-xl shadow p-4 mb-4">
+    <div class="font-semibold mb-2">آخر ${last12.length} قراءات</div>
+    <div class="flex items-end gap-1 h-28">${last12.map(r=>`<div class="flex-1 flex flex-col items-center justify-end h-full">
+      <span class="text-xs">${+r.count||0}</span>
+      <div class="w-full bg-green-500 rounded-t" style="height:${Math.max(4,(+r.count||0)/max*80)}%"></div></div>`).join('')}</div>
+  </div>`:''}
+
+  <form id="rf" class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+    <div class="md:col-span-2 font-semibold">➕ إضافة قراءة جديدة</div>
+    <label class="text-sm">التاريخ والوقت<input required type="datetime-local" id="r_date" class="inp" value="${now}"></label>
+    <label class="text-sm">عدد الحشرات<input required type="number" min="0" id="r_count" class="inp" value="0"></label>
+    <label class="text-sm">نوع الحشرة<input id="r_species" class="inp" placeholder="مثال: سوسة النخيل الحمراء"></label>
+    <label class="text-sm">الحالة<select id="r_status" class="inp"><option value="normal">طبيعي</option><option value="low">إصابة منخفضة</option><option value="high">إصابة مرتفعة</option></select></label>
+    <label class="text-sm">المفتش<input id="r_inspector" class="inp" value="${esc(localStorage.getItem('inspector')||'')}"></label>
+    <label class="text-sm">ملاحظات<input id="r_notes" class="inp"></label>
+    <button class="btn bg-green-700 md:col-span-2">حفظ القراءة</button>
+  </form>
+
+  <div class="bg-white rounded-xl shadow p-4 overflow-x-auto">
+    <div class="font-semibold mb-2">سجل القراءات</div>
+    <table class="w-full text-sm"><thead><tr class="text-slate-500 text-right border-b">
+      <th class="p-2">التاريخ</th><th>العدد</th><th>النوع</th><th>الحالة</th><th>المفتش</th><th>ملاحظات</th><th></th></tr></thead>
+      <tbody>${readings.length?readings.map(r=>`<tr class="border-b">
+        <td class="p-2 whitespace-nowrap">${fmtDate(r.ts)}</td><td class="font-bold">${esc(r.count)}</td><td>${esc(r.species||'')}</td>
+        <td><span class="px-2 py-0.5 rounded text-xs ${(STATUS[r.status]||STATUS.normal)[1]}">${(STATUS[r.status]||STATUS.normal)[0]}</span></td>
+        <td>${esc(r.inspector||'')}</td><td>${esc(r.notes||'')}</td>
+        <td><button class="text-red-600 text-xs" data-del="${esc(r._id)}">حذف</button></td></tr>`).join('')
+        :'<tr><td colspan="7" class="p-4 text-center text-slate-400">لا توجد قراءات بعد</td></tr>'}</tbody></table>
+  </div>`;
+
+  $('#rf').onsubmit = async e => {
+    e.preventDefault();
+    const insp = $('#r_inspector').value.trim(); localStorage.setItem('inspector', insp);
+    await DB.addReading(code,{ ts:new Date($('#r_date').value).getTime(), count:+$('#r_count').value, species:$('#r_species').value.trim(),
+      status:$('#r_status').value, inspector:insp, notes:$('#r_notes').value.trim() });
+    toast('تم حفظ القراءة ✅'); renderTrap(code);
+  };
+  app.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{ if(confirm('حذف هذه القراءة؟')){ await DB.deleteReading(code,b.dataset.del); renderTrap(code);} });
+}
+
+/* ===================== لوحة التحكم ===================== */
+let editing = null;
+async function renderAdmin(){
+  const app=$('#app'); const traps = await DB.getTraps();
+  const isFile = location.protocol==='file:';
+  app.innerHTML = header('— لوحة التحكم') + `
+  ${isFile?`<div class="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg mb-4 text-sm">
+    ⚠️ الملف مفتوح محلياً (file://). الـ QR لن يعمل من الموبايل إلا بعد رفع الملف على استضافة (Firebase Hosting / GitHub Pages) ووضع الرابط في "رابط التطبيق" بالأسفل.</div>`:''}
+
+  <form id="tf" class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div class="md:col-span-3 font-semibold">${editing?'✏️ تعديل مصيدة':'➕ إضافة مصيدة جديدة'}</div>
+    <label class="text-sm">كود المصيدة<input id="t_code" class="inp" placeholder="يُولَّد تلقائياً" ${editing?'readonly':''}></label>
+    <label class="text-sm">اسم المصيدة<input required id="t_name" class="inp"></label>
+    <label class="text-sm">النوع<input id="t_type" class="inp" placeholder="فرمونية / ضوئية / لاصقة"></label>
+    <label class="text-sm md:col-span-3">وصف الموقع (مزرعة / قطعة / صف)<input id="t_location" class="inp"></label>
+    <label class="text-sm">خط العرض<input id="t_lat" class="inp" dir="ltr"></label>
+    <label class="text-sm">خط الطول<input id="t_lng" class="inp" dir="ltr"></label>
+    <div class="flex items-end"><button type="button" id="gps" class="btn bg-blue-600 w-full">📍 موقعي الحالي</button></div>
+    <label class="text-sm md:col-span-3">ملاحظات<input id="t_notes" class="inp"></label>
+    <div class="md:col-span-3 flex gap-2">
+      <button class="btn bg-green-700 flex-1">${editing?'حفظ التعديل':'إضافة المصيدة'}</button>
+      ${editing?'<button type="button" id="cancel" class="btn bg-slate-500">إلغاء</button>':''}
+    </div>
+  </form>
+
+  <div class="bg-white rounded-xl shadow p-4 mb-4">
+    <div class="flex flex-wrap gap-2 justify-between items-center mb-3">
+      <div class="font-semibold">المصائد (${traps.length})</div>
+      <div class="flex gap-2 flex-wrap">
+        <button id="printAll" class="btn bg-slate-700 text-sm">🖨️ طباعة كل الـ QR</button>
+        <button id="csv" class="btn bg-slate-700 text-sm">⬇️ تصدير CSV</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-slate-500 text-right border-b">
+      <th class="p-2">الكود</th><th>الاسم</th><th>الموقع</th><th>النوع</th><th></th></tr></thead><tbody>
+      ${traps.length?traps.map(t=>`<tr class="border-b">
+        <td class="p-2 font-bold text-green-800">${esc(t.code)}</td><td>${esc(t.name)}</td><td>${esc(t.location||'')}</td><td>${esc(t.type||'')}</td>
+        <td class="whitespace-nowrap space-x-2 space-x-reverse">
+          <button class="text-green-700" data-qr="${esc(t.code)}">QR</button>
+          <a class="text-blue-700" href="?trap=${encodeURIComponent(t.code)}">فتح</a>
+          <button class="text-amber-700" data-edit="${esc(t.code)}">تعديل</button>
+          <button class="text-red-600" data-rm="${esc(t.code)}">حذف</button></td></tr>`).join('')
+        :'<tr><td colspan="5" class="p-4 text-center text-slate-400">أضف أول مصيدة من النموذج بالأعلى</td></tr>'}
+    </tbody></table></div>
+  </div>
+
+  <div class="bg-white rounded-xl shadow p-4">
+    <label class="text-sm font-semibold">رابط التطبيق (الذي سيُشفَّر داخل الـ QR)
+      <input id="base" class="inp mt-1" dir="ltr" value="${esc(baseUrl())}"></label>
+    <div class="text-xs text-slate-500 mt-1">غيّره إلى رابط الاستضافة الفعلي قبل طباعة الأكواد. الـ QR يحمل كود المصيدة فقط، والبيانات تُقرأ حيّة من قاعدة البيانات، فتضيف قراءات بلا حدود دون تغيير الكود.</div>
+  </div>
+
+  <div id="modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-40 p-4">
+    <div class="bg-white rounded-xl p-5 text-center max-w-xs w-full">
+      <div id="m_title" class="font-bold text-green-800 text-lg mb-1"></div>
+      <div id="m_sub" class="text-sm text-slate-600 mb-3"></div>
+      <div id="m_qr" class="flex justify-center mb-3"></div>
+      <div id="m_url" class="text-xs break-all text-slate-400 mb-3" dir="ltr"></div>
+      <div class="flex gap-2"><button id="m_dl" class="btn bg-green-700 flex-1 text-sm">تحميل PNG</button>
+      <button id="m_pr" class="btn bg-slate-700 flex-1 text-sm">طباعة</button>
+      <button id="m_x" class="btn bg-slate-400 text-sm">إغلاق</button></div>
+    </div>
+  </div>`;
+
+  // تعبئة النموذج عند التعديل
+  if(editing){ const t=traps.find(x=>x.code===editing);
+    if(t){ $('#t_code').value=t.code; $('#t_name').value=t.name||''; $('#t_type').value=t.type||''; $('#t_location').value=t.location||'';
+      $('#t_lat').value=t.lat||''; $('#t_lng').value=t.lng||''; $('#t_notes').value=t.notes||''; } }
+  else { const n = traps.reduce((m,t)=>{ const x=/(\d+)$/.exec(t.code); return x?Math.max(m,+x[1]):m; },0)+1;
+    $('#t_code').value = 'TRP-'+String(n).padStart(4,'0'); }
+
+  $('#gps').onclick = () => navigator.geolocation
+    ? navigator.geolocation.getCurrentPosition(p=>{ $('#t_lat').value=p.coords.latitude.toFixed(6); $('#t_lng').value=p.coords.longitude.toFixed(6); toast('تم تحديد الموقع'); },
+        ()=>toast('تعذر تحديد الموقع'), {enableHighAccuracy:true})
+    : toast('المتصفح لا يدعم GPS');
+
+  $('#tf').onsubmit = async e => {
+    e.preventDefault();
+    const code = cleanCode($('#t_code').value);
+    if(!code) return toast('الكود مطلوب');
+    if(!editing && await DB.getTrap(code)) return toast('هذا الكود مستخدم بالفعل');
+    const old = editing ? await DB.getTrap(code) : null;
+    await DB.saveTrap({ code, name:$('#t_name').value.trim(), type:$('#t_type').value.trim(), location:$('#t_location').value.trim(),
+      lat:$('#t_lat').value.trim(), lng:$('#t_lng').value.trim(), notes:$('#t_notes').value.trim(), createdAt: old?.createdAt || Date.now() });
+    editing=null; toast('تم الحفظ ✅'); renderAdmin();
+  };
+  if(editing) $('#cancel').onclick=()=>{ editing=null; renderAdmin(); };
+
+  $('#base').onchange = e => { localStorage.setItem('baseUrl', e.target.value.trim()); toast('تم حفظ الرابط'); };
+
+  app.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{ editing=b.dataset.edit; renderAdmin(); window.scrollTo(0,0); });
+  app.querySelectorAll('[data-rm]').forEach(b=>b.onclick=async()=>{ if(confirm('حذف المصيدة وكل قراءاتها؟')){ await DB.deleteTrap(b.dataset.rm); renderAdmin(); } });
+  app.querySelectorAll('[data-qr]').forEach(b=>b.onclick=()=>showQR(traps.find(t=>t.code===b.dataset.qr)));
+  $('#printAll').onclick = () => printLabels(traps);
+  $('#csv').onclick = exportCSV;
+}
+
+function showQR(t){
+  const m=$('#modal'); m.classList.remove('hidden'); m.classList.add('flex');
+  $('#m_title').textContent=t.code; $('#m_sub').textContent=t.name+(t.location?' — '+t.location:'');
+  makeQR($('#m_qr'), trapUrl(t.code), 220); $('#m_url').textContent=trapUrl(t.code);
+  $('#m_x').onclick=()=>{ m.classList.add('hidden'); m.classList.remove('flex'); };
+  $('#m_dl').onclick=async()=>downloadFile(`QR-${t.code}.png`, await qrDataUrl(trapUrl(t.code)));
+  $('#m_pr').onclick=()=>printLabels([t]);
+}
+
+function printLabels(traps){
+  if(!traps.length) return toast('لا توجد مصائد');
+  const pa=$('#printArea'); pa.innerHTML='';
+  traps.forEach(t=>{
+    const d=document.createElement('div'); d.className='label';
+    d.innerHTML=`<div style="font-weight:bold;font-size:14px">${esc(t.code)}</div><div style="font-size:11px">${esc(t.name)}</div><div class="q" style="margin:4px 0"></div><div style="font-size:9px">${esc(t.location||'')}</div>`;
+    pa.appendChild(d); makeQR(d.querySelector('.q'), trapUrl(t.code), 150);
+  });
+  setTimeout(()=>window.print(), 300);
+}
+
+async function exportCSV(){
+  const traps = await DB.getTraps(); const rs = await DB.allReadings(); const tm = Object.fromEntries(traps.map(t=>[t.code,t]));
+  const q = v => '"'+String(v??'').replace(/"/g,'""')+'"';
+  const rows = [['كود المصيدة','الاسم','الموقع','خط العرض','خط الطول','التاريخ','العدد','النوع','الحالة','المفتش','ملاحظات']];
+  rs.sort((a,b)=>a.code.localeCompare(b.code)||a.ts-b.ts).forEach(r=>{ const t=tm[r.code]||{};
+    rows.push([r.code,t.name,t.location,t.lat,t.lng,new Date(r.ts).toISOString(),r.count,r.species,(STATUS[r.status]||STATUS.normal)[0],r.inspector,r.notes]); });
+  downloadFile('traps-readings.csv','\ufeff'+rows.map(r=>r.map(q).join(',')).join('\n'),'text/csv;charset=utf-8');
+}
+
+/* ===================== تشغيل ===================== */
+trapParam ? renderTrap(cleanCode(trapParam)) : renderAdmin();
+</script>
+</body>
+</html>
