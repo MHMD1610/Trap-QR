@@ -31,6 +31,7 @@
   .inp:focus{outline:2px solid #16a34a;border-color:#16a34a}
   .btn{padding:.5rem 1rem;border-radius:.5rem;font-weight:600;color:#fff;cursor:pointer}
   #map{height:480px;border-radius:.75rem;z-index:0}
+  .fs-map{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:45!important;border-radius:0!important;margin:0!important}
   #credit{max-width:72rem;margin:1.5rem auto 2rem;padding:0 .75rem}
   #credit .box{background:linear-gradient(135deg,#14532d,#166534);color:#fff;border-radius:1rem;padding:1.1rem 1.25rem;text-align:center;box-shadow:0 4px 14px rgba(0,0,0,.15)}
   #credit .t1{font-weight:700;font-size:.95rem;line-height:1.9}
@@ -41,7 +42,7 @@
   #credit a.wa{background:#25d366;color:#fff}
   .pts-pin{background:none;border:none}
   .pinwrap{position:absolute;left:0;top:0;transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;white-space:nowrap}
-  .pinlbl{background:#fff;border:1.5px solid #166534;color:#14532d;font-weight:700;font-size:12px;border-radius:6px;padding:1px 6px;margin-bottom:1px;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+  .pinlbl{background:#fff;border:1.5px solid #166534;color:#14532d;font-weight:700;font-size:12px;border-radius:6px;padding:1px 6px;margin-bottom:1px;box-shadow:0 1px 3px rgba(0,0,0,.3);text-align:center;line-height:1.35}
 </style>
 </head>
 <body>
@@ -653,8 +654,8 @@ async function tabMap(){
   </div>`;
   document.querySelectorAll('[data-mf]').forEach(el=>el.onchange=()=>{ MF[el.dataset.mf]=el.value; updateHeat(true); });
   if(map){ map.remove(); map=null; }
-  map = L.map('map').setView([27,30],6);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+  map = L.map('map',{maxZoom:22}).setView([27,30],6);
+  addBaseLayers(map);
   updateHeat(true);
 }
 
@@ -681,12 +682,19 @@ function updateHeat(fit){
   const pts = withXY.filter(s=>w(s)>0).map(s=>[+s.t.lat,+s.t.lng,w(s)]);
   heatLayer = L.heatLayer(pts,{radius:40,blur:30,maxZoom:17,max:maxW||1,
     gradient:{0.2:'#2c7bb6',0.4:'#abd9e9',0.6:'#ffffbf',0.8:'#fdae61',1:'#d7191c'}}).addTo(map);
-  markerLayer = L.layerGroup(withXY.map(s=>L.circleMarker([+s.t.lat,+s.t.lng],{radius:6,color:'#111',weight:1,fillColor:'#fff',fillOpacity:.9})
-    .bindPopup(`<div dir="rtl"><b>${esc(s.t.code)}</b> — ${esc(s.t.name||'')}<br>النوع: ${esc(s.t.type||'—')}<br>الموقع: ${esc(s.t.location||'—')}<br>عدد القراءات: ${s.n}<br>الإجمالي: ${s.total}<br>المتوسط: ${s.avg.toFixed(1)}</div>`))).addTo(map);
-  if(fit && withXY.length){ map.fitBounds(L.latLngBounds(withXY.map(s=>[+s.t.lat,+s.t.lng])),{padding:[50,50],maxZoom:16}); }
+  const gmap={}; withXY.forEach(s=>{ const k=(+s.t.lat).toFixed(5)+','+(+s.t.lng).toFixed(5); (gmap[k]=gmap[k]||[]).push(s); });
+  markerLayer = L.layerGroup(Object.values(gmap).map(arr=>{
+    const s0=arr[0];
+    const body=arr.map(s=>`<div style="margin-top:4px"><b>${esc(s.t.code)}</b> — ${esc(s.t.name||'')}<br>النوع: ${esc(s.t.type||'—')} · الموقع: ${esc(s.t.location||'—')}<br>القراءات: ${s.n} · الإجمالي: ${s.total} · المتوسط: ${s.avg.toFixed(1)}</div>`).join('<hr>');
+    return L.circleMarker([+s0.t.lat,+s0.t.lng],{radius:arr.length>1?9:6,color:'#111',weight:1,fillColor:arr.length>1?'#fde68a':'#fff',fillOpacity:.9})
+      .bindPopup(`<div dir="rtl" style="max-height:220px;overflow:auto">${body}</div>`);
+  })).addTo(map);
+  if(fit && withXY.length){ map.fitBounds(L.latLngBounds(withXY.map(s=>[+s.t.lat,+s.t.lng])),{padding:[50,50],maxZoom:18}); }
   setTimeout(()=>map.invalidateSize(),50);
   const noXY = stats.length - withXY.length;
-  $('#mapInfo').textContent = `المصائد المعروضة: ${withXY.length} من ${stats.length}` + (noXY?` — ${noXY} بدون إحداثيات (غير ظاهرة على الخريطة)`:'') + ` — المقياس: ${MF.metric==='avg'?'متوسط القراءة':'إجمالي الأعداد'}`;
+  const zero = withXY.filter(s=>w(s)<=0).length;
+  $('#mapInfo').textContent = `المصائد المعروضة: ${withXY.length} من ${stats.length} (${Object.keys(gmap).length} موقع مختلف)` + (noXY?` — ${noXY} بدون إحداثيات (غير ظاهرة على الخريطة)`:'')
+    + (zero?` — ${zero} مصيدة بلا قراءات في الفترة (دائرة بيضاء بدون حرارة)`:'') + ` — المقياس: ${MF.metric==='avg'?'متوسط القراءة':'إجمالي الأعداد'}`;
   $('#mapRows').innerHTML = [...stats].sort((a,b)=>w(b)-w(a)).map(s=>`<tr class="border-b">
     <td class="p-2 font-bold text-green-800">${esc(s.t.code)}</td><td>${esc(s.t.name||'')}</td><td>${esc(s.t.type||'')}</td><td>${esc(s.t.location||'')}</td>
     <td>${s.n}</td><td class="font-bold">${s.total}</td><td>${s.avg.toFixed(1)}</td><td>${s.last?fmtDate(s.last):'—'}</td></tr>`).join('')
@@ -697,7 +705,56 @@ function updateHeat(fit){
 let pmap=null, pLayer=null, pBusy=false;
 const PV = {type:'', loc:'', sel:null};
 const hasXY = t => !!xy(t);
-const PIN_SVG = '<svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 31C12 31 2 19 2 12a10 10 0 0 1 20 0c0 7-10 19-10 19z" fill="#dc2626" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>';
+const pinSvg = n => '<svg width="26" height="34" viewBox="0 0 24 32"><path d="M12 31C12 31 2 19 2 12a10 10 0 0 1 20 0c0 7-10 19-10 19z" fill="#dc2626" stroke="#fff" stroke-width="2"/>'
+  + (n>1 ? `<circle cx="12" cy="12" r="7.5" fill="#fff"/><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="700" font-family="Arial" fill="#dc2626">${n}</text>` : '<circle cx="12" cy="12" r="4" fill="#fff"/>')
+  + '</svg>';
+
+/* دمج المصائد المتقاربة أو المتطابقة في دبوس واحد */
+function groupByDist(pts,thr){
+  const g=[];
+  pts.forEach((p,i)=>{
+    const h=g.find(o=>Math.hypot(o.x-p.x,o.y-p.y)<thr);
+    if(h){ h.ids.push(i); const n=h.ids.length; h.x=(h.x*(n-1)+p.x)/n; h.y=(h.y*(n-1)+p.y)/n; }
+    else g.push({ids:[i],x:p.x,y:p.y});
+  });
+  return g;
+}
+/* اختصار قائمة الأكواد: TRP-0004 … TRP-0009 → "TRP-0004–0009" */
+function compactCodes(codes){
+  const it=codes.map(c=>{ const m=/^(.*?)(\d+)$/.exec(c); return m?{c,p:m[1],n:+m[2],w:m[2].length}:{c,p:c,n:null,w:0}; })
+    .sort((a,b)=>a.p===b.p?(a.n??0)-(b.n??0):a.p.localeCompare(b.p));
+  const out=[]; let i=0;
+  while(i<it.length){
+    let j=i;
+    while(it[i].n!==null && j+1<it.length && it[j+1].p===it[i].p && it[j+1].n===it[j].n+1) j++;
+    if(j-i>=2){ out.push({t:`${it[i].c}–${String(it[j].n).padStart(it[j].w,'0')}`,k:j-i+1}); i=j+1; }
+    else { out.push({t:it[i].c,k:1}); i++; }
+  }
+  if(out.length>4){ const rest=out.slice(3).reduce((a,o)=>a+o.k,0); return [...out.slice(0,3).map(o=>o.t),`+${rest} أخرى`]; }
+  return out.map(o=>o.t);
+}
+/* طبقات الخلفية: خريطة / قمر صناعي */
+function addBaseLayers(m){
+  const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:22,maxNativeZoom:19,attribution:'© OpenStreetMap'});
+  const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:22,maxNativeZoom:17,attribution:'Tiles © Esri'});
+  (PV.base==='sat'?sat:osm).addTo(m);
+  L.control.layers({'🗺️ خريطة':osm,'🛰️ قمر صناعي':sat}).addTo(m);
+  m.on('baselayerchange',e=>{ PV.base = e.layer===sat?'sat':'osm'; });
+  addFsControl(m);
+}
+/* ملء الشاشة للخريطة (زر ⛶ أو Esc للخروج) */
+function addFsControl(m){
+  const el=m.getContainer();
+  const Ctl=L.Control.extend({options:{position:'topleft'},onAdd(){
+    const b=L.DomUtil.create('a','leaflet-bar leaflet-control'); b.href='#'; b.title='ملء الشاشة';
+    b.style.cssText='width:34px;height:34px;line-height:34px;text-align:center;font-size:20px;background:#fff;color:#111;display:block;cursor:pointer;text-decoration:none';
+    b.innerHTML='⛶';
+    L.DomEvent.on(b,'click',e=>{ L.DomEvent.stop(e); const on=el.classList.toggle('fs-map'); document.body.style.overflow=on?'hidden':''; b.innerHTML=on?'✕':'⛶'; b.title=on?'إغلاق ملء الشاشة':'ملء الشاشة'; setTimeout(()=>m.invalidateSize(),120); });
+    el._fsBtn=b; return b;
+  }});
+  new Ctl().addTo(m);
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ const f=document.querySelector('.fs-map'); if(f&&f._fsBtn) f._fsBtn.click(); } });
 function pinVisible(){ return CUR_TRAPS.filter(t=>(!PV.type||t.type===PV.type)&&(!PV.loc||t.location===PV.loc)); }
 function shownPins(){ return pinVisible().filter(t=>hasXY(t)&&PV.sel.has(t.code)).map(norm); }
 
@@ -720,8 +777,9 @@ function tabPins(){
     <div class="md:col-span-2"><div id="pmap" dir="ltr" style="height:520px;border-radius:.75rem;z-index:0"></div></div>
   </div>`;
   if(pmap){ pmap.remove(); pmap=null; }
-  pmap = L.map('pmap').setView([27,30],6);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(pmap);
+  pmap = L.map('pmap',{maxZoom:22}).setView([27,30],6);
+  addBaseLayers(pmap);
+  pmap.on('zoomend',()=>updatePins(false));
   $('#p_type').onchange = e => { PV.type=e.target.value; drawPinList(); updatePins(true); };
   $('#p_loc').onchange  = e => { PV.loc=e.target.value; drawPinList(); updatePins(true); };
   $('#p_all').onclick  = () => { pinVisible().filter(hasXY).forEach(t=>PV.sel.add(t.code)); drawPinList(); updatePins(true); };
@@ -744,18 +802,30 @@ function updatePins(fit){
   if(!pmap) return;
   if(pLayer) pmap.removeLayer(pLayer);
   const list = shownPins();
-  pLayer = L.layerGroup(list.map(t=>L.marker([+t.lat,+t.lng],{icon:L.divIcon({className:'pts-pin',iconSize:[0,0],html:`<div class="pinwrap"><span class="pinlbl">${esc(t.code)}</span>${PIN_SVG}</div>`})})
-    .bindPopup(`<div dir="rtl"><b>${esc(t.code)}</b> — ${esc(t.name||'')}<br>النوع: ${esc(t.type||'—')}<br>الموقع: ${esc(t.location||'—')}<br>التركيب: ${esc(t.installDate||'—')}<br><a target="_blank" href="${mapUrl(t)}">فتح في خرائط جوجل</a> · <a href="?trap=${encodeURIComponent(t.code)}">صفحة المصيدة</a></div>`))).addTo(pmap);
-  if(fit && list.length) pmap.fitBounds(L.latLngBounds(list.map(t=>[+t.lat,+t.lng])),{padding:[60,60],maxZoom:17});
+  const z = pmap.getZoom();
+  const pts = list.map(t=>{ const p=pmap.project([+t.lat,+t.lng],z); return {x:p.x,y:p.y}; });
+  const groups = groupByDist(pts,26);
+  const row = t => `<div style="margin-top:4px"><b>${esc(t.code)}</b> — ${esc(t.name||'')}<br>النوع: ${esc(t.type||'—')} · الموقع: ${esc(t.location||'—')}<br>التركيب: ${esc(t.installDate||'—')}<br><a target="_blank" href="${mapUrl(t)}">خرائط جوجل</a> · <a href="?trap=${encodeURIComponent(t.code)}">صفحة المصيدة</a></div>`;
+  pLayer = L.layerGroup(groups.map(g=>{
+    const ts=g.ids.map(i=>list[i]);
+    const lat=ts.reduce((a,t)=>a+ +t.lat,0)/ts.length, lng=ts.reduce((a,t)=>a+ +t.lng,0)/ts.length;
+    const lines=compactCodes(ts.map(t=>t.code));
+    return L.marker([lat,lng],{icon:L.divIcon({className:'pts-pin',iconSize:[0,0],html:`<div class="pinwrap"><span class="pinlbl">${lines.map(esc).join('<br>')}</span>${pinSvg(ts.length)}</div>`})})
+      .bindPopup(`<div dir="rtl" style="max-height:220px;overflow:auto">${ts.map(row).join('<hr>')}</div>`);
+  })).addTo(pmap);
+  if(fit && list.length) pmap.fitBounds(L.latLngBounds(list.map(t=>[+t.lat,+t.lng])),{padding:[60,60],maxZoom:19});
   const noXY = pinVisible().filter(t=>!hasXY(t)).length;
-  $('#p_info').textContent = `على الخريطة: ${list.length}` + (noXY?` — بدون موقع: ${noXY}`:'');
+  const exact={}; list.forEach(t=>{ const k=(+t.lat).toFixed(5)+','+(+t.lng).toFixed(5); exact[k]=(exact[k]||0)+1; });
+  const dup = Object.values(exact).filter(n=>n>1).reduce((a,n)=>a+n,0);
+  $('#p_info').textContent = `على الخريطة: ${list.length}` + (groups.length<list.length?` (${groups.length} دبوس، المتقارب يُدمج ويُكتب عدده داخل الدبوس)`:'')
+    + (dup?` — ⚠️ ${dup} مصيدة لها إحداثيات متطابقة تماماً مع غيرها`:'') + (noXY?` — بدون موقع: ${noXY}`:'');
   setTimeout(()=>pmap.invalidateSize(),50);
 }
 
 /* فحص وإصلاح الإحداثيات المخزّنة */
 async function fixCoords(){
   const box=$('#p_fixres'); box.classList.remove('hidden'); box.textContent='جاري الفحص...';
-  const fixed=[], bad=[], odd=[];
+  const fixed=[], bad=[], odd=[], dup={};
   for(const t of CUR_TRAPS){
     const rl=String(t.lat??'').trim(), rg=String(t.lng??'').trim();
     if(!rl && !rg) continue;
@@ -765,6 +835,7 @@ async function fixCoords(){
       if(la!==undefined && lo!==undefined && Math.abs(la)>90 && Math.abs(la)<=180 && Math.abs(lo)<=90){ p={lat:lo,lng:la}; swapped=true; }
     }
     if(!p){ bad.push(t); continue; }
+    (dup[p.lat.toFixed(5)+','+p.lng.toFixed(5)] = dup[p.lat.toFixed(5)+','+p.lng.toFixed(5)] || []).push(t.code);
     const clean = /^-?\d+(\.\d+)?$/.test(rl) && /^-?\d+(\.\d+)?$/.test(rg);
     if(swapped || !clean){
       const {_id,...rest}=t;
@@ -779,6 +850,7 @@ async function fixCoords(){
   const lines=[];
   if(fixed.length) lines.push(`✅ تم إصلاح صيغة ${fixed.length} مصيدة: ${esc(fixed.join('، '))}`);
   if(bad.length) lines.push(`❌ إحداثيات غير صالحة (عدّلها يدوياً من زر "تعديل"): ${bad.map(t=>`<b>${esc(t.code)}</b> (<span dir="ltr">${esc(t.lat)} | ${esc(t.lng)}</span>)`).join('، ')}`);
+  Object.entries(dup).filter(([k,a])=>a.length>1).forEach(([k,a])=>lines.push(`📌 ${a.length} مصائد لها نفس الإحداثيات بالظبط (<span dir="ltr">${esc(k)}</span>) فتظهر فوق بعض كدبوس واحد: ${esc(compactCodes(a).join('، '))} — غالباً تم تثبيت موقعها من مكان واحد. ثبّت موقع كل مصيدة عند تركيبها الفعلي.`));
   if(odd.length) lines.push(`🧭 خارج نطاق مصر، راجع إن كانت معكوسة أو خاطئة: <span dir="ltr">${esc(odd.join(' ، '))}</span>`);
   box.innerHTML = lines.length ? lines.map(l=>`<div class="mb-1">${l}</div>`).join('') : '✅ كل الإحداثيات سليمة.';
 }
@@ -788,10 +860,11 @@ function mercator(lat,lng,z){
   const s=256*Math.pow(2,z), la=Math.max(-85,Math.min(85,lat))*Math.PI/180;
   return {x:(lng+180)/360*s, y:(1-Math.log(Math.tan(la)+1/Math.cos(la))/Math.PI)/2*s};
 }
-const loadTile = (z,x,y) => new Promise(res=>{ const im=new Image(); im.crossOrigin='anonymous'; im.onload=()=>res(im); im.onerror=()=>res(null); im.src=`https://tile.openstreetmap.org/${z}/${x}/${y}.png`; });
+const loadTile = (z,x,y,base) => new Promise(res=>{ const im=new Image(); im.crossOrigin='anonymous'; im.onload=()=>res(im); im.onerror=()=>res(null);
+  im.src = base==='sat' ? `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}` : `https://tile.openstreetmap.org/${z}/${x}/${y}.png`; });
 function rrect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
-async function renderMapCanvas(list,W,H){
+async function renderMapCanvas(list,W,H,base='osm'){
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
   const padX=170, padY=140; let z=17;
   for(; z>1; z--){
@@ -803,40 +876,49 @@ async function renderMapCanvas(list,W,H){
   const cx=(Math.min(...pts.map(a=>a.x))+Math.max(...pts.map(a=>a.x)))/2, cy=(Math.min(...pts.map(a=>a.y))+Math.max(...pts.map(a=>a.y)))/2;
   const left=cx-W/2, top=cy-H/2;
   ctx.fillStyle='#e5e7eb'; ctx.fillRect(0,0,W,H);
-  const n=Math.pow(2,z), jobs=[];
+  const n=Math.pow(2,z), jobs=[]; let loaded=0;
   for(let ty=Math.floor(top/256); ty<=Math.floor((top+H)/256); ty++){
     if(ty<0||ty>=n) continue;
     for(let tx=Math.floor(left/256); tx<=Math.floor((left+W)/256); tx++){
       const wx=((tx%n)+n)%n;
-      jobs.push(loadTile(z,wx,ty).then(im=>{ if(im) ctx.drawImage(im,tx*256-left,ty*256-top,256,256); }));
+      jobs.push(loadTile(z,wx,ty,base).then(im=>{ if(im){ loaded++; ctx.drawImage(im,tx*256-left,ty*256-top,256,256); } }));
     }
   }
   await Promise.all(jobs);
+  if(base==='sat' && loaded===0){ toast('تعذر تحميل صور القمر الصناعي — تم استخدام الخريطة العادية'); return renderMapCanvas(list,W,H,'osm'); }
 
   ctx.direction='ltr'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  const xy=pts.map(p=>({x:p.x-left,y:p.y-top}));
-  const placed=xy.map(p=>({x:p.x-16,y:p.y-42,w:32,h:44}));
+  const P=pts.map(p=>({x:p.x-left,y:p.y-top}));
+  // دمج المصائد المتقاربة/المتطابقة في دبوس واحد
+  const groups=groupByDist(P,38).map(g=>({...g,codes:g.ids.map(i=>list[i].code)}));
+  const placed=groups.map(g=>({x:g.x-16,y:g.y-42,w:32,h:44}));
   const hit=(a,b)=>!(a.x+a.w<b.x||b.x+b.w<a.x||a.y+a.h<b.y||b.y+b.h<a.y);
   // الدبابيس
-  xy.forEach(p=>{
-    const r=11, cc={x:p.x,y:p.y-26}, al=Math.acos(r/26);
-    ctx.beginPath(); ctx.moveTo(p.x,p.y);
+  groups.forEach(g=>{
+    const r=11, cc={x:g.x,y:g.y-26}, al=Math.acos(r/26), cnt=g.ids.length;
+    ctx.beginPath(); ctx.moveTo(g.x,g.y);
     ctx.lineTo(cc.x+r*Math.cos(Math.PI/2-al), cc.y+r*Math.sin(Math.PI/2-al));
     ctx.arc(cc.x,cc.y,r,Math.PI/2-al,Math.PI/2+al,true); ctx.closePath();
     ctx.fillStyle='#dc2626'; ctx.fill(); ctx.lineWidth=2.5; ctx.strokeStyle='#fff'; ctx.stroke();
-    ctx.beginPath(); ctx.arc(cc.x,cc.y,4.5,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
+    if(cnt>1){
+      ctx.beginPath(); ctx.arc(cc.x,cc.y,8.5,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
+      ctx.fillStyle='#dc2626'; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.fillText(String(cnt),cc.x,cc.y+1); ctx.textAlign='left';
+    } else { ctx.beginPath(); ctx.arc(cc.x,cc.y,4.5,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill(); }
   });
-  // الأكواد
-  ctx.font='bold 24px Tahoma, Arial';
-  list.forEach((t,i)=>{
-    const p=xy[i], w=ctx.measureText(t.code).width+18, h=34;
-    const cands=[{x:p.x+16,y:p.y-46},{x:p.x-16-w,y:p.y-46},{x:p.x-w/2,y:p.y-46-h-4},{x:p.x-w/2,y:p.y+6}];
-    let pick=cands.find(o=>!placed.some(r=>hit({x:o.x,y:o.y,w,h},r))) || cands[0];
+  // الأكواد (سطر لكل مجموعة أكواد متتالية)
+  ctx.font='bold 24px Tahoma, Arial'; ctx.textAlign='center';
+  groups.forEach(g=>{
+    const lines=compactCodes(g.codes), lh=30;
+    const w=Math.max(...lines.map(l=>ctx.measureText(l).width))+18, h=lines.length*lh+6;
+    const cands=[{x:g.x+16,y:g.y-46},{x:g.x-16-w,y:g.y-46},{x:g.x-w/2,y:g.y-46-h-4},{x:g.x-w/2,y:g.y+6}];
+    const pick=cands.find(o=>!placed.some(r=>hit({x:o.x,y:o.y,w,h},r))) || cands[0];
     placed.push({x:pick.x,y:pick.y,w,h});
     rrect(ctx,pick.x,pick.y,w,h,7); ctx.fillStyle='#fff'; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#166534'; ctx.stroke();
-    ctx.fillStyle='#14532d'; ctx.fillText(t.code,pick.x+9,pick.y+h/2+1);
+    ctx.fillStyle='#14532d';
+    lines.forEach((l,k)=>ctx.fillText(l,pick.x+w/2,pick.y+3+lh*k+lh/2+1));
   });
-  ctx.font='18px Arial'; const at='© OpenStreetMap contributors', aw=ctx.measureText(at).width+14;
+  ctx.textAlign='left';
+  ctx.font='18px Arial'; const at= base==='sat' ? 'Tiles © Esri — Maxar, Earthstar Geographics' : '© OpenStreetMap contributors', aw=ctx.measureText(at).width+14;
   ctx.fillStyle='rgba(255,255,255,.85)'; ctx.fillRect(W-aw,H-28,aw,28); ctx.fillStyle='#333'; ctx.fillText(at,W-aw+7,H-13);
   ctx.strokeStyle='#14532d'; ctx.lineWidth=3; ctx.strokeRect(1.5,1.5,W-3,H-3);
   return c;
@@ -883,7 +965,7 @@ async function exportPins(mode){
   if(!list.length) return toast('حدد مصائد لها موقع أولاً');
   pBusy=true; toast('جاري تجهيز الخريطة... (قد تستغرق بضع ثوانٍ)');
   try{
-    const mc = await renderMapCanvas(list,1680,1200);
+    const mc = await renderMapCanvas(list,1680,1200,PV.base||'osm');
     const pages = buildReportPages(list,mc);
     if(mode==='pdf'){
       const {jsPDF} = window.jspdf; const pdf = new jsPDF({unit:'mm',format:'a4',orientation:'p'});
