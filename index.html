@@ -107,6 +107,7 @@ if (useFirebase) {
     async deleteTrap(c){ await rdb.ref('traps/'+c).remove(); await rdb.ref('readings/'+c).remove(); },
     async getReadings(c){ const s = await rdb.ref('readings/'+c).once('value'); return toArr(s.val()).sort((a,b)=>b.ts-a.ts); },
     async addReading(c,r){ await rdb.ref('readings/'+c).push(r); },
+    async addReadingKey(c,id,r){ await rdb.ref(`readings/${c}/${id}`).set(r); },
     async deleteReading(c,id){ await rdb.ref(`readings/${c}/${id}`).remove(); },
     async isAdmin(u){ try{ const s = await rdb.ref('admins/'+u).once('value'); return s.val()===true; }catch(e){ return false; } },
     async allReadings(){ const s = await rdb.ref('readings').once('value'); const o=s.val()||{}; let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; },
@@ -124,6 +125,7 @@ if (useFirebase) {
     async deleteTrap(c){ const o=L('traps'); delete o[c]; S('traps',o); const r=L('readings'); delete r[c]; S('readings',r); },
     async getReadings(c){ return toArr(L('readings')[c]).sort((a,b)=>b.ts-a.ts); },
     async addReading(c,r){ const o=L('readings'); o[c]=o[c]||{}; o[c]['r'+Date.now()+Math.random().toString(36).slice(2,6)]=r; S('readings',o); },
+    async addReadingKey(c,id,r){ const o=L('readings'); o[c]=o[c]||{}; o[c][id]=r; S('readings',o); },
     async deleteReading(c,id){ const o=L('readings'); if(o[c]) delete o[c][id]; S('readings',o); },
     async isAdmin(){ return true; },
     async allReadings(){ const o=L('readings'); let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; },
@@ -140,16 +142,46 @@ const fmtDate = ts => new Date(ts).toLocaleString('ar-EG',{dateStyle:'medium',ti
 const fmtISO = ts => ts ? new Date(ts - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16).replace('T',' ') : '';
 function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'),2200); }
 function baseUrl(){ return localStorage.getItem('baseUrl') || (location.origin + location.pathname); }
-function trapUrl(code){ return baseUrl() + '?trap=' + encodeURIComponent(code); }
+const withTO = (p,ms,fb) => Promise.race([p, new Promise(r=>setTimeout(()=>r(fb),ms))]);
+function b64e(o){ const bytes=new TextEncoder().encode(JSON.stringify(o)); let bin=''; bytes.forEach(b=>bin+=String.fromCharCode(b)); return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+function b64d(s){ s=String(s).replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='='; const bin=atob(s); return JSON.parse(new TextDecoder().decode(Uint8Array.from(bin,c=>c.charCodeAt(0)))); }
+const embedOn = () => localStorage.getItem('embedQR') !== '0';
+/* رابط الـ QR: كود المصيدة + (اختيارياً) بياناتها الأساسية للعرض بدون إنترنت */
+function trapUrl(t){
+  const code = typeof t==='string' ? t : t.code;
+  let u = baseUrl() + '?trap=' + encodeURIComponent(code);
+  if(typeof t!=='string' && embedOn()){
+    const o={}; if(t.name) o.n=t.name; if(t.type) o.y=t.type; if(t.location) o.l=t.location; if(t.installDate) o.d=t.installDate;
+    if(Object.keys(o).length) u += '&i=' + b64e(o);
+  }
+  return u;
+}
+/* قراءات بانتظار الإرسال (للعمل بدون إنترنت) */
+const pendingList = () => { try{ return JSON.parse(localStorage.getItem('pending')||'[]'); }catch(e){ return []; } };
+const setPending = a => localStorage.setItem('pending', JSON.stringify(a));
+function addPending(code,reading){ const a=pendingList(); a.push({id:'q'+Date.now()+Math.random().toString(36).slice(2,6), code, reading}); setPending(a); }
+let flushing=false;
+async function flushPending(){
+  if(flushing || !navigator.onLine) return 0;
+  if(auth && !CUR) return 0;
+  flushing=true; let sent=0;
+  try{
+    for(const it of pendingList()){
+      const r = await withTO(DB.addReadingKey(it.code,it.id,it.reading).then(()=>'ok').catch(e=>String(e&&(e.code||e.message)).includes('PERMISSION_DENIED')?'drop':'err'),10000,'err');
+      if(r==='ok'||r==='drop'){ setPending(pendingList().filter(x=>x.id!==it.id)); if(r==='ok') sent++; } else break;
+    }
+  } finally { flushing=false; }
+  return sent;
+}
 function mapUrl(t){ return (t.lat && t.lng) ? `https://www.google.com/maps?q=${t.lat},${t.lng}` : ''; }
 const STATUS = {normal:['طبيعي','bg-green-100 text-green-800'], low:['إصابة منخفضة','bg-yellow-100 text-yellow-800'], high:['إصابة مرتفعة','bg-red-100 text-red-800']};
 const uniq = a => [...new Set(a.filter(Boolean))];
 
 function makeQR(el, text, size=220){
-  el.innerHTML=''; new QRCode(el,{text,width:size,height:size,correctLevel:QRCode.CorrectLevel.M});
+  el.innerHTML=''; new QRCode(el,{text,width:size,height:size,correctLevel:text.length>160?QRCode.CorrectLevel.L:QRCode.CorrectLevel.M});
 }
 function qrDataUrl(text,size=400){
-  return new Promise(res=>{ const d=document.createElement('div'); new QRCode(d,{text,width:size,height:size,correctLevel:QRCode.CorrectLevel.M});
+  return new Promise(res=>{ const d=document.createElement('div'); new QRCode(d,{text,width:size,height:size,correctLevel:text.length>160?QRCode.CorrectLevel.L:QRCode.CorrectLevel.M});
     setTimeout(()=>{ const c=d.querySelector('canvas'); res(c?c.toDataURL('image/png'):d.querySelector('img').src); },80); });
 }
 function downloadFile(name, content, type){ const a=document.createElement('a'); a.href = content.startsWith('data:')?content:URL.createObjectURL(new Blob([content],{type})); a.download=name; a.click(); }
@@ -222,6 +254,7 @@ function header(sub=''){
     </div>
     <div class="flex gap-2 items-center">
       <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
+      ${pendingList().length?`<span class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">⏳ ${pendingList().length} قراءة بانتظار الإرسال</span>`:''}
       ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(CUR.email)})</button>`:''}
     </div>
   </div>`;
@@ -230,10 +263,27 @@ function header(sub=''){
 /* ===================== صفحة المصيدة (بعد السكان) ===================== */
 async function renderTrap(code){
   const app=$('#app'); app.innerHTML = header() + '<p>جاري التحميل...</p>';
-  LISTS = await DB.getLists();
-  const t = await DB.getTrap(code);
+  const readJSON = (k,d) => { try{ const v=JSON.parse(localStorage.getItem(k)||'null'); return v ?? d; }catch(e){ return d; } };
+  LISTS = (await withTO(DB.getLists().catch(()=>null),3500,null)) || readJSON('lc',null) || normLists(null);
+  try{ localStorage.setItem('lc', JSON.stringify(LISTS)); }catch(e){}
+  let t = await withTO(DB.getTrap(code).catch(()=>undefined),4500,undefined);
+  const live = t !== undefined;
+  let src = 'live';
+  if(live){ if(t){ try{ localStorage.setItem('ct_'+code, JSON.stringify(t)); }catch(e){} } }
+  else {
+    t = readJSON('ct_'+code,null); src = 'cache';
+    if(!t){
+      src = 'qr';
+      try{ const o=b64d(params.get('i')||''); t={code, name:o.n||'', type:o.y||'', location:o.l||'', installDate:o.d||''}; }
+      catch(e){ t={code, name:'', type:'', location:'', installDate:''}; }
+    }
+  }
   if(!t){ app.innerHTML = header()+`<div class="bg-white p-6 rounded-xl">المصيدة <b>${esc(code)}</b> غير موجودة. <a class="text-green-700 underline" href="${location.pathname}">لوحة التحكم</a></div>`; return; }
-  const readings = await DB.getReadings(code);
+  let readings = live ? await withTO(DB.getReadings(code).catch(()=>null),5000,null) : null;
+  if(readings){ try{ localStorage.setItem('cr_'+code, JSON.stringify(readings.slice(0,60))); }catch(e){} }
+  else readings = readJSON('cr_'+code,[]);
+  const pend = pendingList().filter(p=>p.code===code).map(p=>({...p.reading,_id:p.id,_pending:true}));
+  readings = [...pend,...readings].sort((a,b)=>b.ts-a.ts);
   const counts = readings.map(r=>+r.count||0);
   const total = counts.reduce((a,b)=>a+b,0);
   const avg = counts.length ? (total/counts.length).toFixed(1) : 0;
@@ -242,6 +292,7 @@ async function renderTrap(code){
   const now = new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
 
   app.innerHTML = header() + `
+  ${src!=='live'?`<div class="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl p-3 mb-4 text-sm">📴 لا يوجد اتصال بالخادم — البيانات الأساسية معروضة من ${src==='cache'?'آخر زيارة للمصيدة':'الـ QR نفسه'}. أي قراءة تسجلها تُحفظ على جهازك وتُرسل تلقائياً عند توفر الإنترنت.</div>`:''}
   <div class="bg-white rounded-xl shadow p-4 mb-4">
     <div class="flex justify-between items-start flex-wrap gap-2">
       <div>
@@ -259,7 +310,7 @@ async function renderTrap(code){
       <div>📝 ملاحظات: ${esc(t.notes||'—')}</div>
     </div>
     ${mapUrl(t)?`<a target="_blank" href="${mapUrl(t)}" class="btn bg-blue-600 inline-block mt-3 text-sm">فتح الموقع على الخريطة</a>`:''}
-    ${IS_ADMIN?`<button id="setLoc" class="btn bg-emerald-700 mt-3 text-sm mr-2">📍 تثبيت موقع التركيب الآن</button>`:''}
+    ${IS_ADMIN&&live?`<button id="setLoc" class="btn bg-emerald-700 mt-3 text-sm mr-2">📍 تثبيت موقع التركيب الآن</button>`:''}
   </div>
 
   <div class="grid grid-cols-3 gap-2 mb-4 text-center">
@@ -293,8 +344,8 @@ async function renderTrap(code){
       <tbody>${readings.length?readings.map(r=>`<tr class="border-b">
         <td class="p-2 whitespace-nowrap">${fmtDate(r.ts)}</td><td class="font-bold">${esc(r.count)}</td><td>${esc(r.species||'')}</td>
         <td><span class="px-2 py-0.5 rounded text-xs ${(STATUS[r.status]||STATUS.normal)[1]}">${(STATUS[r.status]||STATUS.normal)[0]}</span></td>
-        <td>${esc(r.inspector||'')}</td><td>${esc(r.notes||'')}</td>
-        <td>${IS_ADMIN?`<button class="text-red-600 text-xs" data-del="${esc(r._id)}">حذف</button>`:''}</td></tr>`).join('')
+        <td>${esc(r.inspector||'')}</td><td>${r._pending?'<span class="text-amber-700 text-xs">⏳ بانتظار الإرسال</span> ':''}${esc(r.notes||'')}</td>
+        <td>${IS_ADMIN&&live&&!r._pending?`<button class="text-red-600 text-xs" data-del="${esc(r._id)}">حذف</button>`:''}</td></tr>`).join('')
         :'<tr><td colspan="7" class="p-4 text-center text-slate-400">لا توجد قراءات بعد</td></tr>'}</tbody></table>
   </div>`;
 
@@ -312,9 +363,11 @@ async function renderTrap(code){
   if($('#rf')) $('#rf').onsubmit = async e => {
     e.preventDefault();
     const insp = $('#r_inspector').value.trim(); localStorage.setItem('inspector', insp);
-    await DB.addReading(code,{ ts:new Date($('#r_date').value).getTime(), count:+$('#r_count').value, species:$('#r_species').value,
+    addPending(code,{ ts:new Date($('#r_date').value).getTime(), count:+$('#r_count').value, species:$('#r_species').value,
       status:$('#r_status').value, inspector:insp, notes:$('#r_notes').value.trim() });
-    toast('تم حفظ القراءة ✅'); renderTrap(code);
+    if(navigator.onLine){ toast('جاري الحفظ...'); const n = await flushPending(); toast(n?'تم حفظ القراءة ✅':'⏳ تم الحفظ على الجهاز وستُرسل تلقائياً'); }
+    else toast('📴 لا يوجد إنترنت — تم الحفظ على جهازك وستُرسل تلقائياً');
+    renderTrap(code);
   };
   app.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{ if(confirm('حذف هذه القراءة؟')){ await DB.deleteReading(code,b.dataset.del); renderTrap(code);} });
 }
@@ -401,7 +454,10 @@ function tabTraps(){
   <div class="bg-white rounded-xl shadow p-4">
     <label class="text-sm font-semibold">رابط التطبيق (الذي سيُشفَّر داخل الـ QR)
       <input id="base" class="inp mt-1" dir="ltr" value="${esc(baseUrl())}"></label>
-    <div class="text-xs text-slate-500 mt-1">الـ QR يحمل كود المصيدة فقط، والبيانات تُقرأ حيّة من القاعدة.</div>
+    <div class="text-xs text-slate-500 mt-1">عند وجود إنترنت تُقرأ البيانات حيّة من القاعدة.</div>
+    <label class="flex items-start gap-2 mt-3 text-sm"><input type="checkbox" id="embedChk" class="mt-1" ${embedOn()?'checked':''}>
+      <span><b>تضمين البيانات الأساسية داخل الـ QR</b> (الاسم، النوع، الموقع، تاريخ التركيب) ليظهر كود وبيانات المصيدة حتى بدون إنترنت.
+      <span class="block text-xs text-slate-500">يجعل الـ QR أكثر كثافة، فاستخدم ملصقاً متوسطاً أو كبيراً. أعد طباعة الأكواد بعد تغيير هذا الخيار أو تعديل بيانات المصيدة.</span></span></label>
   </div>`;
 
   $('#w_name').innerHTML = listSelect('t_name','names','');
@@ -453,6 +509,7 @@ function tabTraps(){
   };
   if(editing) $('#cancel').onclick=()=>{ editing=null; renderAdmin(); };
   $('#base').onchange = e => { localStorage.setItem('baseUrl', e.target.value.trim()); toast('تم حفظ الرابط'); };
+  $('#embedChk').onchange = e => { localStorage.setItem('embedQR', e.target.checked?'1':'0'); toast(e.target.checked?'سيتم تضمين البيانات في الـ QR':'الـ QR سيحمل الكود فقط'); };
 
   $('#f_q').oninput = e => { F.q=e.target.value; drawRows(); };
   $('#f_type').onchange = e => { F.type=e.target.value; drawRows(); };
@@ -498,14 +555,14 @@ function drawRows(){
 function showQR(t){
   const m=$('#modal'); m.classList.remove('hidden'); m.classList.add('flex');
   $('#m_title').textContent=t.code; $('#m_sub').textContent=t.name+(t.location?' — '+t.location:'');
-  makeQR($('#m_qr'), trapUrl(t.code), 220); $('#m_url').textContent=trapUrl(t.code);
+  makeQR($('#m_qr'), trapUrl(t), 260); $('#m_url').textContent=trapUrl(t.code);
   $('#m_x').onclick=()=>{ m.classList.add('hidden'); m.classList.remove('flex'); };
-  $('#m_dl').onclick=async()=>downloadFile(`QR-${t.code}.png`, await qrDataUrl(trapUrl(t.code)));
+  $('#m_dl').onclick=async()=>downloadFile(`QR-${t.code}.png`, await qrDataUrl(trapUrl(t),700));
   $('#m_pr').onclick=()=>printLabels([t], PSIZE);
 }
 
 /* ---------- طباعة الملصقات (QR + الكود تحته) ---------- */
-const PSIZES = { s:{qr:90, cols:5}, m:{qr:130, cols:4}, l:{qr:180, cols:3} };
+const PSIZES = { s:{qr:110, cols:5}, m:{qr:150, cols:4}, l:{qr:200, cols:3} };
 function printLabels(list, size='m'){
   if(!list.length) return toast('حدد مصيدة واحدة على الأقل');
   const {qr,cols} = PSIZES[size] || PSIZES.m;
@@ -516,7 +573,7 @@ function printLabels(list, size='m'){
       <div style="font-weight:bold;font-size:${qr>=130?16:12}px;margin-top:3px;letter-spacing:.5px">${esc(t.code)}</div>
       <div style="font-size:${qr>=130?11:9}px">${esc(t.name||'')}</div>
       <div style="font-size:${qr>=130?10:8}px;color:#444">${esc(t.location||'')}</div>`;
-    pa.appendChild(d); makeQR(d.querySelector('.q'), trapUrl(t.code), qr);
+    pa.appendChild(d); makeQR(d.querySelector('.q'), trapUrl(t), qr);
   });
   setTimeout(()=>window.print(), 250 + list.length*15);
 }
@@ -802,8 +859,22 @@ async function exportXLSX(){
 /* ===================== تشغيل ===================== */
 function route(){ trapParam ? renderTrap(cleanCode(trapParam)) : renderAdmin(); }
 if(auth){
-  auth.onAuthStateChanged(async u => { CUR=u; IS_ADMIN = u ? await DB.isAdmin(u.uid) : false; route(); });
-} else { IS_ADMIN = true; route(); }
+  auth.onAuthStateChanged(async u => {
+    CUR=u; IS_ADMIN=false;
+    if(u){
+      const r = await withTO(DB.isAdmin(u.uid),3500,null);
+      if(r===null) IS_ADMIN = localStorage.getItem('adm_'+u.uid)==='1';
+      else { IS_ADMIN=r; try{ localStorage.setItem('adm_'+u.uid, r?'1':'0'); }catch(e){} }
+    }
+    route();
+    flushPending().then(n=>{ if(n){ toast(`تم إرسال ${n} قراءة ✅`); route(); } });
+  });
+} else { IS_ADMIN = true; route(); flushPending(); }
+window.addEventListener('online', async () => {
+  const n = await flushPending();
+  if(n){ toast(`تم إرسال ${n} قراءة ✅`); if(trapParam) renderTrap(cleanCode(trapParam)); }
+});
+if('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
 </body>
 </html>
