@@ -29,6 +29,8 @@
   }
   .inp{width:100%;border:1px solid #cbd5e1;border-radius:.5rem;padding:.5rem .75rem;background:#fff}
   .inp:focus{outline:2px solid #16a34a;border-color:#16a34a}
+  .inp{min-width:0;box-sizing:border-box}
+  input[type=datetime-local].inp,input[type=date].inp{-webkit-appearance:none;appearance:none;min-height:2.6rem;text-align:right}
   .btn{padding:.5rem 1rem;border-radius:.5rem;font-weight:600;color:#fff;cursor:pointer}
   #map{height:480px;border-radius:.75rem;z-index:0}
   .fs-map{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:45!important;border-radius:0!important;margin:0!important}
@@ -95,7 +97,7 @@ function normLists(o){
 
 /* ===================== طبقة التخزين ===================== */
 const useFirebase = !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL);
-let DB, auth = null, CUR = null, IS_ADMIN = false;
+let DB, auth = null, CUR = null, IS_ADMIN = false, UNAME = '';
 if (useFirebase) {
   firebase.initializeApp(FIREBASE_CONFIG);
   auth = firebase.auth();
@@ -111,6 +113,10 @@ if (useFirebase) {
     async addReadingKey(c,id,r){ await rdb.ref(`readings/${c}/${id}`).set(r); },
     async deleteReading(c,id){ await rdb.ref(`readings/${c}/${id}`).remove(); },
     async isAdmin(u){ try{ const s = await rdb.ref('admins/'+u).once('value'); return s.val()===true; }catch(e){ return false; } },
+    async getUser(u){ const s = await rdb.ref('users/'+u).once('value'); return s.val(); },
+    async touchUser(u,email){ await rdb.ref('users/'+u+'/email').set(email); },
+    async getUsers(){ const s = await rdb.ref('users').once('value'); const o=s.val()||{}; return Object.entries(o).map(([k,v])=>({uid:k,...v})); },
+    async setUserName(u,n){ await rdb.ref('users/'+u+'/name').set(n || null); },
     async allReadings(){ const s = await rdb.ref('readings').once('value'); const o=s.val()||{}; let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; },
     async getLists(){ try{ const s = await rdb.ref('lists').once('value'); return normLists(s.val()); }catch(e){ return normLists(null); } },
     async saveList(k,arr){ await rdb.ref('lists/'+k).set(arr); }
@@ -129,6 +135,7 @@ if (useFirebase) {
     async addReadingKey(c,id,r){ const o=L('readings'); o[c]=o[c]||{}; o[c][id]=r; S('readings',o); },
     async deleteReading(c,id){ const o=L('readings'); if(o[c]) delete o[c][id]; S('readings',o); },
     async isAdmin(){ return true; },
+    async getUser(){ return null; }, async touchUser(){}, async getUsers(){ return []; }, async setUserName(){},
     async allReadings(){ const o=L('readings'); let out=[]; for(const c in o) toArr(o[c]).forEach(r=>out.push({...r,code:c})); return out; },
     async getLists(){ return normLists(L('lists')); },
     async saveList(k,arr){ const o=L('lists'); o[k]=arr; S('lists',o); }
@@ -275,7 +282,7 @@ function header(sub=''){
       <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
       ${pendingList().length?`<span class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">⏳ ${pendingList().length} قراءة بانتظار الإرسال</span>`:''}
       ${CUR?`<span class="text-xs px-2 py-1 rounded ${IS_ADMIN?'bg-purple-100 text-purple-800':'bg-sky-100 text-sky-800'}">${IS_ADMIN?'مدير':'مشرف'}</span>`:''}
-      ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(CUR.email)})</button>`:''}
+      ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(UNAME||CUR.email)})</button>`:''}
     </div>
   </div>`;
 }
@@ -352,7 +359,9 @@ async function renderTrap(code){
     <label class="text-sm">عدد الحشرات<input required type="number" min="0" id="r_count" class="inp" value="0"></label>
     <label class="text-sm">نوع الحشرة${listSelect('r_species','species','',IS_ADMIN)}</label>
     <label class="text-sm">الحالة<select id="r_status" class="inp"><option value="normal">طبيعي</option><option value="low">إصابة منخفضة</option><option value="high">إصابة مرتفعة</option></select></label>
-    <label class="text-sm">المفتش<input id="r_inspector" class="inp" value="${esc(localStorage.getItem('inspector')||'')}"></label>
+    ${(auth&&CUR)
+      ? `<label class="text-sm">المفتش (تلقائي من حسابك)<input id="r_inspector" class="inp bg-slate-100 text-slate-700" value="${esc(UNAME||CUR.email)}" readonly></label>`
+      : `<label class="text-sm">المفتش<input id="r_inspector" class="inp" value="${esc(localStorage.getItem('inspector')||'')}"></label>`}
     <label class="text-sm">ملاحظات<input id="r_notes" class="inp"></label>
     <button class="btn bg-green-700 md:col-span-2">حفظ القراءة</button>
   </form>`:`<div class="mb-4"><div class="text-center text-sm text-slate-600">سجّل الدخول لإضافة قراءة جديدة</div>${loginBoxHtml()}</div>`}
@@ -384,7 +393,7 @@ async function renderTrap(code){
     e.preventDefault();
     const insp = $('#r_inspector').value.trim(); localStorage.setItem('inspector', insp);
     addPending(code,{ ts:new Date($('#r_date').value).getTime(), count:+$('#r_count').value, species:$('#r_species').value,
-      status:$('#r_status').value, inspector:insp, notes:$('#r_notes').value.trim() });
+      status:$('#r_status').value, inspector:insp, by:CUR?CUR.uid:'', notes:$('#r_notes').value.trim() });
     if(navigator.onLine){ toast('جاري الحفظ...'); const n = await flushPending(); toast(n?'تم حفظ القراءة ✅':'⏳ تم الحفظ على الجهاز وستُرسل تلقائياً'); }
     else toast('📴 لا يوجد إنترنت — تم الحفظ على جهازك وستُرسل تلقائياً');
     renderTrap(code);
@@ -414,7 +423,7 @@ async function renderAdmin(){
   app.innerHTML = header('— لوحة التحكم') + `
   ${isFile?`<div class="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg mb-4 text-sm">⚠️ الملف مفتوح محلياً (file://). الـ QR لن يعمل من الموبايل إلا بعد النشر.</div>`:''}
   <div class="flex gap-2 mb-4 flex-wrap items-center">
-    ${tabBtn('traps','🪤 المصائد')}${tabBtn('pins','📍 مواقع المصائد')}${tabBtn('map','🗺️ الخريطة الحرارية')}${tabBtn('lists','📋 القوائم')}
+    ${tabBtn('traps','🪤 المصائد')}${tabBtn('pins','📍 مواقع المصائد')}${tabBtn('map','🗺️ الخريطة الحرارية')}${tabBtn('lists','📋 القوائم')}${tabBtn('users','👥 المستخدمون')}
     <button id="xlsx" class="btn bg-emerald-700 text-sm mr-auto">⬇️ تنزيل كل البيانات (Excel)</button>
   </div>
   <div id="tabBody"></div>
@@ -434,6 +443,7 @@ async function renderAdmin(){
   if(TAB==='traps') tabTraps();
   else if(TAB==='pins') tabPins();
   else if(TAB==='map') await tabMap();
+  else if(TAB==='users') await tabUsers();
   else tabLists();
 }
 
@@ -605,6 +615,36 @@ function printLabels(list, size='m'){
     pa.appendChild(d); makeQR(d.querySelector('.q'), trapUrl(t), qr);
   });
   setTimeout(()=>window.print(), 250 + list.length*15);
+}
+
+/* ---------- اسم المستخدم (يُسجَّل تلقائياً كاسم المفتش) ---------- */
+async function loadUserName(u){
+  UNAME = '';
+  if(!u) return;
+  const base = String(u.email||'').split('@')[0];
+  const cached = localStorage.getItem('uname_'+u.uid);
+  const rec = await withTO(DB.getUser(u.uid).catch(()=>undefined),3500,undefined);   // undefined = تعذر الاتصال
+  if(rec && rec.name){ UNAME = rec.name; try{ localStorage.setItem('uname_'+u.uid, rec.name); }catch(e){} }
+  else UNAME = rec===undefined ? (cached || base) : base;
+  if(rec===null || (rec && rec.email!==u.email)) withTO(DB.touchUser(u.uid,u.email||'').catch(()=>{}),5000,null);
+}
+async function tabUsers(){
+  $('#tabBody').innerHTML = '<p>جاري التحميل...</p>';
+  const us = (await DB.getUsers()).sort((a,b)=>String(a.email||'').localeCompare(String(b.email||'')));
+  $('#tabBody').innerHTML = `<div class="bg-white rounded-xl shadow p-4 overflow-x-auto">
+    <div class="font-semibold mb-1">الحسابات وأسماؤها</div>
+    <div class="text-xs text-slate-500 mb-3">الحساب يظهر هنا بعد أول تسجيل دخول له. الاسم المكتوب يُسجَّل تلقائياً كاسم المفتش في كل قراءة يضيفها صاحب الحساب (ولا يستطيع تغييره). لو تُرك فارغاً يُستخدم الجزء الأول من الإيميل.</div>
+    <table class="w-full text-sm"><thead><tr class="text-slate-500 text-right border-b"><th class="p-2">الإيميل</th><th>الاسم</th><th></th></tr></thead><tbody>
+    ${us.length ? us.map(u=>`<tr class="border-b"><td class="p-2" dir="ltr" style="text-align:left">${esc(u.email||'—')}<div class="text-[10px] text-slate-400">${esc(u.uid)}</div></td>
+      <td class="min-w-[180px]"><input class="inp" data-un="${esc(u.uid)}" value="${esc(u.name||'')}" placeholder="مثال: م. أحمد علي"></td>
+      <td><button class="btn bg-green-700 text-sm" data-us="${esc(u.uid)}">حفظ</button></td></tr>`).join('')
+      : '<tr><td colspan="3" class="p-4 text-center text-slate-400">لا توجد حسابات بعد — تظهر بعد أول تسجيل دخول لكل حساب</td></tr>'}
+    </tbody></table></div>`;
+  document.querySelectorAll('[data-us]').forEach(b=>b.onclick=async()=>{
+    const uid=b.dataset.us, name=document.querySelector(`[data-un="${uid}"]`).value.trim();
+    try{ await DB.setUserName(uid,name); if(CUR && uid===CUR.uid){ UNAME=name||String(CUR.email||'').split('@')[0]; } toast('تم حفظ الاسم ✅'); }
+    catch(e){ toast('تعذر الحفظ — تأكد من تحديث قواعد Firebase'); }
+  });
 }
 
 /* ---------- تبويب القوائم ---------- */
@@ -1005,9 +1045,9 @@ async function exportXLSX(){
 function route(){ trapParam ? renderTrap(cleanCode(trapParam)) : renderAdmin(); }
 if(auth){
   auth.onAuthStateChanged(async u => {
-    CUR=u; IS_ADMIN=false;
+    CUR=u; IS_ADMIN=false; UNAME='';
     if(u){
-      const r = await withTO(DB.isAdmin(u.uid),3500,null);
+      const [r] = await Promise.all([withTO(DB.isAdmin(u.uid),3500,null), loadUserName(u)]);
       if(r===null) IS_ADMIN = localStorage.getItem('adm_'+u.uid)==='1';
       else { IS_ADMIN=r; try{ localStorage.setItem('adm_'+u.uid, r?'1':'0'); }catch(e){} }
     }
