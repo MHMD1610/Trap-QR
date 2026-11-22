@@ -7,6 +7,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
@@ -23,6 +24,8 @@
     #printArea{display:grid!important;gap:4mm}
     .label{border:1px dashed #333;padding:4px;text-align:center;page-break-inside:avoid;break-inside:avoid;display:flex;flex-direction:column;align-items:center}
     .label .q{display:flex;justify-content:center}
+    .pimg{width:100%;display:block;page-break-after:always;break-after:page}
+    .pimg:last-child{page-break-after:auto;break-after:auto}
   }
   .inp{width:100%;border:1px solid #cbd5e1;border-radius:.5rem;padding:.5rem .75rem;background:#fff}
   .inp:focus{outline:2px solid #16a34a;border-color:#16a34a}
@@ -36,6 +39,9 @@
   #credit a{display:inline-flex;align-items:center;gap:.4rem;padding:.45rem .9rem;border-radius:999px;font-size:.85rem;font-weight:600;text-decoration:none;direction:ltr}
   #credit a.call{background:#fff;color:#14532d}
   #credit a.wa{background:#25d366;color:#fff}
+  .pts-pin{background:none;border:none}
+  .pinwrap{position:absolute;left:0;top:0;transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;white-space:nowrap}
+  .pinlbl{background:#fff;border:1.5px solid #166534;color:#14532d;font-weight:700;font-size:12px;border-radius:6px;padding:1px 6px;margin-bottom:1px;box-shadow:0 1px 3px rgba(0,0,0,.3)}
 </style>
 </head>
 <body>
@@ -332,7 +338,7 @@ async function renderAdmin(){
   app.innerHTML = header('— لوحة التحكم') + `
   ${isFile?`<div class="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg mb-4 text-sm">⚠️ الملف مفتوح محلياً (file://). الـ QR لن يعمل من الموبايل إلا بعد النشر.</div>`:''}
   <div class="flex gap-2 mb-4 flex-wrap items-center">
-    ${tabBtn('traps','🪤 المصائد')}${tabBtn('map','🗺️ الخريطة الحرارية')}${tabBtn('lists','📋 القوائم')}
+    ${tabBtn('traps','🪤 المصائد')}${tabBtn('pins','📍 مواقع المصائد')}${tabBtn('map','🗺️ الخريطة الحرارية')}${tabBtn('lists','📋 القوائم')}
     <button id="xlsx" class="btn bg-emerald-700 text-sm mr-auto">⬇️ تنزيل كل البيانات (Excel)</button>
   </div>
   <div id="tabBody"></div>
@@ -350,6 +356,7 @@ async function renderAdmin(){
   app.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ TAB=b.dataset.tab; renderAdmin(); });
   $('#xlsx').onclick = exportXLSX;
   if(TAB==='traps') tabTraps();
+  else if(TAB==='pins') tabPins();
   else if(TAB==='map') await tabMap();
   else tabLists();
 }
@@ -599,6 +606,176 @@ function updateHeat(fit){
     <td class="p-2 font-bold text-green-800">${esc(s.t.code)}</td><td>${esc(s.t.name||'')}</td><td>${esc(s.t.type||'')}</td><td>${esc(s.t.location||'')}</td>
     <td>${s.n}</td><td class="font-bold">${s.total}</td><td>${s.avg.toFixed(1)}</td><td>${s.last?fmtDate(s.last):'—'}</td></tr>`).join('')
     || '<tr><td colspan="8" class="p-4 text-center text-slate-400">لا توجد بيانات</td></tr>';
+}
+
+/* ---------- خريطة مواقع المصائد (دبابيس + PDF + طباعة) ---------- */
+let pmap=null, pLayer=null, pBusy=false;
+const PV = {type:'', loc:'', sel:null};
+const hasXY = t => t.lat && t.lng && !isNaN(+t.lat) && !isNaN(+t.lng);
+const PIN_SVG = '<svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 31C12 31 2 19 2 12a10 10 0 0 1 20 0c0 7-10 19-10 19z" fill="#dc2626" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>';
+function pinVisible(){ return CUR_TRAPS.filter(t=>(!PV.type||t.type===PV.type)&&(!PV.loc||t.location===PV.loc)); }
+function shownPins(){ return pinVisible().filter(t=>hasXY(t)&&PV.sel.has(t.code)); }
+
+function tabPins(){
+  if(!PV.sel) PV.sel = new Set(CUR_TRAPS.filter(hasXY).map(t=>t.code));
+  const T = CUR_TRAPS;
+  $('#tabBody').innerHTML = `
+  <div class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
+    <label class="text-xs">النوع<select id="p_type" class="inp"><option value="">الكل</option>${uniq(T.map(t=>t.type)).map(x=>`<option ${PV.type===x?'selected':''}>${esc(x)}</option>`).join('')}</select></label>
+    <label class="text-xs">المكان<select id="p_loc" class="inp"><option value="">الكل</option>${uniq(T.map(t=>t.location)).map(x=>`<option ${PV.loc===x?'selected':''}>${esc(x)}</option>`).join('')}</select></label>
+    <div class="flex gap-2 col-span-2 md:col-span-1"><button id="p_all" class="btn bg-slate-600 text-sm flex-1">تحديد الكل</button><button id="p_none" class="btn bg-slate-500 text-sm flex-1">إلغاء</button></div>
+    <button id="p_pdf" class="btn bg-red-700 text-sm">📄 حفظ PDF</button>
+    <button id="p_print" class="btn bg-slate-700 text-sm">🖨️ طباعة</button>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="bg-white rounded-xl shadow p-3"><div id="p_info" class="text-xs text-slate-600 mb-2"></div><div id="p_list" class="max-h-[480px] overflow-y-auto"></div></div>
+    <div class="md:col-span-2"><div id="pmap" dir="ltr" style="height:520px;border-radius:.75rem;z-index:0"></div></div>
+  </div>`;
+  if(pmap){ pmap.remove(); pmap=null; }
+  pmap = L.map('pmap').setView([27,30],6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(pmap);
+  $('#p_type').onchange = e => { PV.type=e.target.value; drawPinList(); updatePins(true); };
+  $('#p_loc').onchange  = e => { PV.loc=e.target.value; drawPinList(); updatePins(true); };
+  $('#p_all').onclick  = () => { pinVisible().filter(hasXY).forEach(t=>PV.sel.add(t.code)); drawPinList(); updatePins(true); };
+  $('#p_none').onclick = () => { pinVisible().forEach(t=>PV.sel.delete(t.code)); drawPinList(); updatePins(false); };
+  $('#p_pdf').onclick = () => exportPins('pdf');
+  $('#p_print').onclick = () => exportPins('print');
+  drawPinList(); updatePins(true);
+}
+function drawPinList(){
+  const vis = pinVisible();
+  $('#p_list').innerHTML = vis.map(t=>{ const ok=hasXY(t);
+    return `<label class="flex items-center gap-2 py-1 border-b text-sm ${ok?'':'opacity-50'}">
+      <input type="checkbox" data-pc="${esc(t.code)}" ${ok?'':'disabled'} ${ok&&PV.sel.has(t.code)?'checked':''}>
+      <b class="text-green-800">${esc(t.code)}</b><span class="truncate">${esc(t.name||'')}</span>${ok?'':'<span class="mr-auto text-xs">⚠️ بدون موقع</span>'}</label>`; }).join('')
+    || '<div class="text-slate-400 text-sm">لا توجد مصائد</div>';
+  document.querySelectorAll('[data-pc]').forEach(c=>c.onchange=()=>{ c.checked?PV.sel.add(c.dataset.pc):PV.sel.delete(c.dataset.pc); updatePins(false); });
+}
+function updatePins(fit){
+  if(!pmap) return;
+  if(pLayer) pmap.removeLayer(pLayer);
+  const list = shownPins();
+  pLayer = L.layerGroup(list.map(t=>L.marker([+t.lat,+t.lng],{icon:L.divIcon({className:'pts-pin',iconSize:[0,0],html:`<div class="pinwrap"><span class="pinlbl">${esc(t.code)}</span>${PIN_SVG}</div>`})})
+    .bindPopup(`<div dir="rtl"><b>${esc(t.code)}</b> — ${esc(t.name||'')}<br>النوع: ${esc(t.type||'—')}<br>الموقع: ${esc(t.location||'—')}<br>التركيب: ${esc(t.installDate||'—')}<br><a target="_blank" href="${mapUrl(t)}">فتح في خرائط جوجل</a> · <a href="?trap=${encodeURIComponent(t.code)}">صفحة المصيدة</a></div>`))).addTo(pmap);
+  if(fit && list.length) pmap.fitBounds(L.latLngBounds(list.map(t=>[+t.lat,+t.lng])),{padding:[60,60],maxZoom:17});
+  const noXY = pinVisible().filter(t=>!hasXY(t)).length;
+  $('#p_info').textContent = `على الخريطة: ${list.length}` + (noXY?` — بدون موقع: ${noXY}`:'');
+  setTimeout(()=>pmap.invalidateSize(),50);
+}
+
+/* رسم الخريطة على Canvas (دبابيس + أكواد) لاستخدامها في PDF والطباعة */
+function mercator(lat,lng,z){
+  const s=256*Math.pow(2,z), la=Math.max(-85,Math.min(85,lat))*Math.PI/180;
+  return {x:(lng+180)/360*s, y:(1-Math.log(Math.tan(la)+1/Math.cos(la))/Math.PI)/2*s};
+}
+const loadTile = (z,x,y) => new Promise(res=>{ const im=new Image(); im.crossOrigin='anonymous'; im.onload=()=>res(im); im.onerror=()=>res(null); im.src=`https://tile.openstreetmap.org/${z}/${x}/${y}.png`; });
+function rrect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+async function renderMapCanvas(list,W,H){
+  const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
+  const padX=170, padY=140; let z=17;
+  for(; z>1; z--){
+    const p=list.map(t=>mercator(+t.lat,+t.lng,z));
+    const w=Math.max(...p.map(a=>a.x))-Math.min(...p.map(a=>a.x)), h=Math.max(...p.map(a=>a.y))-Math.min(...p.map(a=>a.y));
+    if(w<=W-2*padX && h<=H-2*padY) break;
+  }
+  const pts=list.map(t=>mercator(+t.lat,+t.lng,z));
+  const cx=(Math.min(...pts.map(a=>a.x))+Math.max(...pts.map(a=>a.x)))/2, cy=(Math.min(...pts.map(a=>a.y))+Math.max(...pts.map(a=>a.y)))/2;
+  const left=cx-W/2, top=cy-H/2;
+  ctx.fillStyle='#e5e7eb'; ctx.fillRect(0,0,W,H);
+  const n=Math.pow(2,z), jobs=[];
+  for(let ty=Math.floor(top/256); ty<=Math.floor((top+H)/256); ty++){
+    if(ty<0||ty>=n) continue;
+    for(let tx=Math.floor(left/256); tx<=Math.floor((left+W)/256); tx++){
+      const wx=((tx%n)+n)%n;
+      jobs.push(loadTile(z,wx,ty).then(im=>{ if(im) ctx.drawImage(im,tx*256-left,ty*256-top,256,256); }));
+    }
+  }
+  await Promise.all(jobs);
+
+  ctx.direction='ltr'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  const xy=pts.map(p=>({x:p.x-left,y:p.y-top}));
+  const placed=xy.map(p=>({x:p.x-16,y:p.y-42,w:32,h:44}));
+  const hit=(a,b)=>!(a.x+a.w<b.x||b.x+b.w<a.x||a.y+a.h<b.y||b.y+b.h<a.y);
+  // الدبابيس
+  xy.forEach(p=>{
+    const r=11, cc={x:p.x,y:p.y-26}, al=Math.acos(r/26);
+    ctx.beginPath(); ctx.moveTo(p.x,p.y);
+    ctx.lineTo(cc.x+r*Math.cos(Math.PI/2-al), cc.y+r*Math.sin(Math.PI/2-al));
+    ctx.arc(cc.x,cc.y,r,Math.PI/2-al,Math.PI/2+al,true); ctx.closePath();
+    ctx.fillStyle='#dc2626'; ctx.fill(); ctx.lineWidth=2.5; ctx.strokeStyle='#fff'; ctx.stroke();
+    ctx.beginPath(); ctx.arc(cc.x,cc.y,4.5,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
+  });
+  // الأكواد
+  ctx.font='bold 24px Tahoma, Arial';
+  list.forEach((t,i)=>{
+    const p=xy[i], w=ctx.measureText(t.code).width+18, h=34;
+    const cands=[{x:p.x+16,y:p.y-46},{x:p.x-16-w,y:p.y-46},{x:p.x-w/2,y:p.y-46-h-4},{x:p.x-w/2,y:p.y+6}];
+    let pick=cands.find(o=>!placed.some(r=>hit({x:o.x,y:o.y,w,h},r))) || cands[0];
+    placed.push({x:pick.x,y:pick.y,w,h});
+    rrect(ctx,pick.x,pick.y,w,h,7); ctx.fillStyle='#fff'; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#166534'; ctx.stroke();
+    ctx.fillStyle='#14532d'; ctx.fillText(t.code,pick.x+9,pick.y+h/2+1);
+  });
+  ctx.font='18px Arial'; const at='© OpenStreetMap contributors', aw=ctx.measureText(at).width+14;
+  ctx.fillStyle='rgba(255,255,255,.85)'; ctx.fillRect(W-aw,H-28,aw,28); ctx.fillStyle='#333'; ctx.fillText(at,W-aw+7,H-13);
+  ctx.strokeStyle='#14532d'; ctx.lineWidth=3; ctx.strokeRect(1.5,1.5,W-3,H-3);
+  return c;
+}
+
+/* صفحات التقرير A4 (خريطة + جدول) */
+function buildReportPages(list,mapCanvas){
+  const W=1240,H=1754,M=60,pages=[], RH=44;
+  const dateTxt=new Date().toLocaleDateString('ar-EG',{dateStyle:'long'});
+  const cols=[['الكود',150],['الاسم',250],['الموقع',250],['النوع',150],['تاريخ التركيب',150],['الإحداثيات',170]];
+  const newPage=()=>{ const c=document.createElement('canvas'); c.width=W; c.height=H; const x=c.getContext('2d');
+    x.fillStyle='#fff'; x.fillRect(0,0,W,H); x.direction='rtl'; x.textBaseline='middle'; pages.push(c); return x; };
+  const cell=(ctx,txt,edge,wd,y)=>{ ctx.save(); ctx.beginPath(); ctx.rect(edge-wd,y,wd,RH); ctx.clip(); ctx.textAlign='right'; ctx.fillText(String(txt??''),edge-10,y+RH/2+1); ctx.restore(); };
+  const head=(ctx,y)=>{ ctx.fillStyle='#14532d'; ctx.fillRect(M,y,W-2*M,RH); ctx.fillStyle='#fff'; ctx.font='bold 20px Tahoma, Arial';
+    let e=W-M; cols.forEach(([l,w])=>{ cell(ctx,l,e,w,y); e-=w; }); };
+  let ctx=newPage();
+  // ترويسة الصفحة الأولى
+  rrect(ctx,M,48,130,72,14); ctx.fillStyle='#14532d'; ctx.fill();
+  ctx.direction='ltr'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.font='bold 40px Arial'; ctx.fillText('PTS',M+65,85); ctx.direction='rtl';
+  ctx.textAlign='right'; ctx.fillStyle='#14532d'; ctx.font='bold 44px Tahoma, Arial'; ctx.fillText('خريطة مواقع المصائد',W-M,78);
+  ctx.fillStyle='#475569'; ctx.font='22px Tahoma, Arial'; ctx.fillText('PTS — نظام مصائد الآفات',W-M,120);
+  ctx.font='21px Tahoma, Arial'; ctx.fillText(`التاريخ: ${dateTxt}   |   عدد المصائد: ${list.length}`,W-M,152);
+  ctx.drawImage(mapCanvas,M,185,W-2*M,Math.round((W-2*M)*mapCanvas.height/mapCanvas.width));
+  let y=185+Math.round((W-2*M)*mapCanvas.height/mapCanvas.width)+30;
+  head(ctx,y); y+=RH;
+  list.forEach((t,i)=>{
+    if(y+RH>H-90){ ctx=newPage(); y=70; head(ctx,y); y+=RH; }
+    if(i%2===0){ ctx.fillStyle='#f1f5f0'; ctx.fillRect(M,y,W-2*M,RH); }
+    ctx.strokeStyle='#d1d5db'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(M,y+RH); ctx.lineTo(W-M,y+RH); ctx.stroke();
+    ctx.fillStyle='#111';
+    const vals=[t.code,t.name,t.location,t.type,t.installDate||'—',`${(+t.lat).toFixed(5)}, ${(+t.lng).toFixed(5)}`];
+    let e=W-M; vals.forEach((v,k)=>{ ctx.font = k===0?'bold 20px Tahoma, Arial':(k===5?'16px Arial':'19px Tahoma, Arial'); cell(ctx,v,e,cols[k][1],y); e-=cols[k][1]; });
+    y+=RH;
+  });
+  pages.forEach((c,i)=>{ const x=c.getContext('2d'); x.direction='rtl'; x.textAlign='center'; x.fillStyle='#64748b'; x.font='17px Tahoma, Arial';
+    x.fillText('م. محمد عبد الجواد — مدير قطاع مكافحة الآفات — 01000754632',W/2,H-48);
+    x.fillText(`صفحة ${i+1} من ${pages.length}`,W/2,H-24); });
+  return pages;
+}
+
+async function exportPins(mode){
+  if(pBusy) return;
+  const list = shownPins();
+  if(!list.length) return toast('حدد مصائد لها موقع أولاً');
+  pBusy=true; toast('جاري تجهيز الخريطة... (قد تستغرق بضع ثوانٍ)');
+  try{
+    const mc = await renderMapCanvas(list,1680,1200);
+    const pages = buildReportPages(list,mc);
+    if(mode==='pdf'){
+      const {jsPDF} = window.jspdf; const pdf = new jsPDF({unit:'mm',format:'a4',orientation:'p'});
+      pages.forEach((c,i)=>{ if(i) pdf.addPage(); pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,210,297); });
+      pdf.save('PTS-traps-map-'+new Date().toISOString().slice(0,10)+'.pdf'); toast('تم حفظ ملف PDF ✅');
+    } else {
+      const pa=$('#printArea'); pa.innerHTML=''; pa.style.gridTemplateColumns='1fr';
+      pages.forEach(c=>{ const im=new Image(); im.className='pimg'; im.src=c.toDataURL('image/jpeg',0.92); pa.appendChild(im); });
+      setTimeout(()=>window.print(),400);
+    }
+  }catch(e){ console.error(e); toast('تعذر تجهيز الخريطة'); }
+  pBusy=false;
 }
 
 /* ---------- تنزيل كل البيانات Excel ---------- */
