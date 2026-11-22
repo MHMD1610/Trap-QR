@@ -249,9 +249,11 @@ async function renderTrap(code){
       <div>📍 الموقع: ${esc(t.location||'—')}</div>
       <div>🏷️ النوع: ${esc(t.type||'—')}</div>
       <div>🧭 الإحداثيات: ${t.lat&&t.lng?`${esc(t.lat)}, ${esc(t.lng)}`:'—'}</div>
+      <div>🗓️ تاريخ التركيب: ${esc(t.installDate||'—')}</div>
       <div>📝 ملاحظات: ${esc(t.notes||'—')}</div>
     </div>
     ${mapUrl(t)?`<a target="_blank" href="${mapUrl(t)}" class="btn bg-blue-600 inline-block mt-3 text-sm">فتح الموقع على الخريطة</a>`:''}
+    ${IS_ADMIN?`<button id="setLoc" class="btn bg-emerald-700 mt-3 text-sm mr-2">📍 تثبيت موقع التركيب الآن</button>`:''}
   </div>
 
   <div class="grid grid-cols-3 gap-2 mb-4 text-center">
@@ -291,6 +293,16 @@ async function renderTrap(code){
   </div>`;
 
   bindLogin(); bindListSelects(app);
+  if($('#setLoc')) $('#setLoc').onclick = () => {
+    if(!navigator.geolocation) return toast('المتصفح لا يدعم GPS');
+    if(t.lat && t.lng && !confirm('يوجد موقع محفوظ لهذه المصيدة. استبداله بموقعك الحالي؟')) return;
+    toast('جاري تحديد الموقع...');
+    navigator.geolocation.getCurrentPosition(async p => {
+      const today = new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+      await DB.saveTrap({...t, lat:p.coords.latitude.toFixed(6), lng:p.coords.longitude.toFixed(6), installDate:t.installDate||today});
+      toast('تم تثبيت الموقع ✅'); renderTrap(code);
+    }, ()=>toast('تعذر تحديد الموقع'), {enableHighAccuracy:true});
+  };
   if($('#rf')) $('#rf').onsubmit = async e => {
     e.preventDefault();
     const insp = $('#r_inspector').value.trim(); localStorage.setItem('inspector', insp);
@@ -303,6 +315,7 @@ async function renderTrap(code){
 
 /* ===================== لوحة التحكم ===================== */
 let TAB = 'traps', editing = null;
+let LAST = {}; try{ LAST = JSON.parse(localStorage.getItem('lastTrap')||'{}'); }catch(e){}
 let CUR_TRAPS = [];
 const SEL = new Set();
 const F = {q:'', type:'', loc:''};
@@ -350,7 +363,8 @@ function tabTraps(){
     <label class="text-sm">كود المصيدة<input id="t_code" class="inp" placeholder="يُولَّد تلقائياً" ${editing?'readonly':''}></label>
     <label class="text-sm">اسم المصيدة<span id="w_name"></span></label>
     <label class="text-sm">النوع<span id="w_type"></span></label>
-    <label class="text-sm md:col-span-3">الموقع<span id="w_loc"></span></label>
+    <label class="text-sm md:col-span-2">الموقع<span id="w_loc"></span></label>
+    <label class="text-sm">تاريخ التركيب<input type="date" id="t_install" class="inp"></label>
     <label class="text-sm">خط العرض<input id="t_lat" class="inp" dir="ltr"></label>
     <label class="text-sm">خط الطول<input id="t_lng" class="inp" dir="ltr"></label>
     <div class="flex items-end"><button type="button" id="gps" class="btn bg-blue-600 w-full">📍 موقعي الحالي</button></div>
@@ -372,7 +386,7 @@ function tabTraps(){
       </div>
     </div>
     <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-slate-500 text-right border-b">
-      <th class="p-2 w-8"><input type="checkbox" id="chkAll"></th><th>الكود</th><th>الاسم</th><th>الموقع</th><th>النوع</th><th></th></tr></thead>
+      <th class="p-2 w-8"><input type="checkbox" id="chkAll"></th><th>الكود</th><th>الاسم</th><th>الموقع</th><th>النوع</th><th>التركيب</th><th></th></tr></thead>
       <tbody id="rows"></tbody></table></div>
     <div id="rowsInfo" class="text-xs text-slate-500 mt-2"></div>
   </div>
@@ -394,11 +408,16 @@ function tabTraps(){
       $('#w_name').innerHTML = listSelect('t_name','names',t.name||'');
       $('#w_type').innerHTML = listSelect('t_type','types',t.type||'');
       $('#w_loc').innerHTML  = listSelect('t_location','locations',t.location||'');
-      $('#t_lat').value=t.lat||''; $('#t_lng').value=t.lng||''; $('#t_notes').value=t.notes||'';
+      $('#t_lat').value=t.lat||''; $('#t_lng').value=t.lng||''; $('#t_notes').value=t.notes||''; $('#t_install').value=t.installDate||'';
     }
   } else {
     const n = traps.reduce((m,t)=>{ const x=/(\d+)$/.exec(t.code); return x?Math.max(m,+x[1]):m; },0)+1;
     $('#t_code').value = 'TRP-'+String(n).padStart(4,'0');
+    // الاحتفاظ بآخر إدخال
+    $('#w_name').innerHTML = listSelect('t_name','names',LAST.name||'');
+    $('#w_type').innerHTML = listSelect('t_type','types',LAST.type||'');
+    $('#w_loc').innerHTML  = listSelect('t_location','locations',LAST.location||'');
+    $('#t_notes').value = LAST.notes||''; $('#t_install').value = LAST.installDate||'';
   }
   bindListSelects($('#tf'));
 
@@ -415,9 +434,15 @@ function tabTraps(){
     if(!name || name==='__new__') return toast('اختر اسم المصيدة من القائمة');
     if(!editing && await DB.getTrap(code)) return toast('هذا الكود مستخدم بالفعل');
     const old = editing ? await DB.getTrap(code) : null;
-    await DB.saveTrap({ code, name, type:$('#t_type').value, location:$('#t_location').value,
-      lat:$('#t_lat').value.trim(), lng:$('#t_lng').value.trim(), notes:$('#t_notes').value.trim(), createdAt: old?.createdAt || Date.now() });
-    editing=null; toast('تم الحفظ ✅'); renderAdmin();
+    const rec = { code, name, type:$('#t_type').value, location:$('#t_location').value,
+      lat:$('#t_lat').value.trim(), lng:$('#t_lng').value.trim(), notes:$('#t_notes').value.trim(),
+      installDate:$('#t_install').value, createdAt: old?.createdAt || Date.now() };
+    await DB.saveTrap(rec);
+    if(!editing){
+      LAST = {name:rec.name, type:rec.type, location:rec.location, notes:rec.notes, installDate:rec.installDate};
+      try{ localStorage.setItem('lastTrap', JSON.stringify(LAST)); }catch(e){}
+    }
+    editing=null; toast('تم حفظ '+code+' ✅'); renderAdmin();
   };
   if(editing) $('#cancel').onclick=()=>{ editing=null; renderAdmin(); };
   $('#base').onchange = e => { localStorage.setItem('baseUrl', e.target.value.trim()); toast('تم حفظ الرابط'); };
@@ -448,12 +473,13 @@ function drawRows(){
   $('#rows').innerHTML = vis.length ? vis.map(t=>`<tr class="border-b">
     <td class="p-2"><input type="checkbox" data-sel="${esc(t.code)}" ${SEL.has(t.code)?'checked':''}></td>
     <td class="font-bold text-green-800">${esc(t.code)}</td><td>${esc(t.name)}</td><td>${esc(t.location||'')}</td><td>${esc(t.type||'')}</td>
+    <td class="text-xs whitespace-nowrap">${t.installDate?esc(t.installDate):'—'} ${t.lat&&t.lng?'<span title="تم تحديد الموقع">📍</span>':'<span title="بدون موقع">⚠️</span>'}</td>
     <td class="whitespace-nowrap space-x-2 space-x-reverse">
       <button class="text-green-700" data-qr="${esc(t.code)}">QR</button>
       <a class="text-blue-700" href="?trap=${encodeURIComponent(t.code)}">فتح</a>
       <button class="text-amber-700" data-edit="${esc(t.code)}">تعديل</button>
       <button class="text-red-600" data-rm="${esc(t.code)}">حذف</button></td></tr>`).join('')
-    : '<tr><td colspan="6" class="p-4 text-center text-slate-400">لا توجد مصائد مطابقة</td></tr>';
+    : '<tr><td colspan="7" class="p-4 text-center text-slate-400">لا توجد مصائد مطابقة</td></tr>';
   $('#rowsInfo').textContent = `المعروض ${vis.length} من ${CUR_TRAPS.length} مصيدة`;
   document.querySelectorAll('[data-sel]').forEach(c=>c.onchange=()=>{ c.checked?SEL.add(c.dataset.sel):SEL.delete(c.dataset.sel); updSel(); });
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{ editing=b.dataset.edit; tabTraps(); window.scrollTo(0,0); });
@@ -579,13 +605,13 @@ function updateHeat(fit){
 async function exportXLSX(){
   const traps = await DB.getTraps(); const rs = await DB.allReadings();
   const tm = Object.fromEntries(traps.map(t=>[t.code,t]));
-  const sheetTraps = traps.map(t=>({'كود المصيدة':t.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','خط العرض':t.lat||'','خط الطول':t.lng||'','ملاحظات':t.notes||'','تاريخ الإضافة':fmtISO(t.createdAt)}));
+  const sheetTraps = traps.map(t=>({'كود المصيدة':t.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','خط العرض':t.lat||'','خط الطول':t.lng||'','ملاحظات':t.notes||'','تاريخ التركيب':t.installDate||'','تاريخ الإضافة':fmtISO(t.createdAt)}));
   rs.sort((a,b)=>a.code.localeCompare(b.code)||a.ts-b.ts);
   const sheetReads = rs.map(r=>{ const t=tm[r.code]||{}; return {
     'كود المصيدة':r.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','خط العرض':t.lat||'','خط الطول':t.lng||'',
     'التاريخ':fmtISO(r.ts),'العدد':+r.count||0,'نوع الحشرة':r.species||'','الحالة':(STATUS[r.status]||STATUS.normal)[0],'المفتش':r.inspector||'','ملاحظات':r.notes||''}; });
   const sheetSum = traps.map(t=>{ const x=rs.filter(r=>r.code===t.code); const total=x.reduce((a,r)=>a+(+r.count||0),0);
-    return {'كود المصيدة':t.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','عدد القراءات':x.length,'إجمالي الحشرات':total,'المتوسط':x.length?+(total/x.length).toFixed(2):0,'آخر قراءة':x.length?fmtISO(Math.max(...x.map(r=>r.ts))):''}; });
+    return {'كود المصيدة':t.code,'الاسم':t.name||'','النوع':t.type||'','الموقع':t.location||'','تاريخ التركيب':t.installDate||'','عدد القراءات':x.length,'إجمالي الحشرات':total,'المتوسط':x.length?+(total/x.length).toFixed(2):0,'آخر قراءة':x.length?fmtISO(Math.max(...x.map(r=>r.ts))):''}; });
   const wb = XLSX.utils.book_new();
   const add = (rows,name,empty) => { const ws = XLSX.utils.json_to_sheet(rows.length?rows:[empty]); ws['!cols']=Object.keys(rows[0]||empty).map(()=>({wch:18})); XLSX.utils.book_append_sheet(wb,ws,name); };
   add(sheetReads,'القراءات',{'لا توجد قراءات':''});
