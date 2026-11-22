@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>نظام QR لمصائد الحشرات</title>
+<title>PTS — نظام مصائد الآفات</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -175,6 +175,24 @@ function bindListSelects(root){
 const params = new URLSearchParams(location.search);
 const trapParam = params.get('trap');
 
+/* شعار PTS */
+function logoSvg(size=48){
+  return `<svg width="${size}" height="${size}" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-label="PTS">
+    <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14532d"/><stop offset="1" stop-color="#22a35a"/></linearGradient></defs>
+    <rect width="64" height="64" rx="15" fill="url(#lg)"/>
+    <g fill="#fff">
+      <rect x="9" y="9" width="17" height="17" rx="3"/><rect x="38" y="9" width="17" height="17" rx="3"/><rect x="9" y="38" width="17" height="17" rx="3"/>
+      <rect x="30" y="9" width="4" height="4"/><rect x="30" y="17" width="4" height="4"/><rect x="9" y="30" width="4" height="4"/><rect x="17" y="30" width="4" height="4"/>
+      <rect x="30" y="30" width="4" height="4"/><rect x="38" y="30" width="4" height="4"/><rect x="46" y="30" width="4" height="4"/><rect x="30" y="38" width="4" height="4"/><rect x="30" y="46" width="4" height="4"/>
+    </g>
+    <g fill="#166534"><rect x="12.5" y="12.5" width="10" height="10" rx="1.5"/><rect x="41.5" y="12.5" width="10" height="10" rx="1.5"/><rect x="12.5" y="41.5" width="10" height="10" rx="1.5"/></g>
+    <g fill="#fff"><rect x="15.5" y="15.5" width="4" height="4" rx="1"/><rect x="44.5" y="15.5" width="4" height="4" rx="1"/><rect x="15.5" y="44.5" width="4" height="4" rx="1"/></g>
+    <path d="M40 55 C39 44 47 38 57 40 C58 49 51 57 40 55 Z" fill="#fff"/>
+    <path d="M42 53 C46 48 50 45 54 43" stroke="#166534" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+  </svg>`;
+}
+(function(){ const l=document.createElement('link'); l.rel='icon'; l.href='data:image/svg+xml,'+encodeURIComponent(logoSvg(64)); document.head.appendChild(l); })();
+
 function loginBoxHtml(){
   return `<form id="lf" class="bg-white rounded-xl shadow p-4 grid gap-3 max-w-sm mx-auto my-4">
     <div class="font-semibold">🔐 تسجيل دخول المفتش</div>
@@ -191,7 +209,11 @@ function bindLogin(){
 }
 function header(sub=''){
   return `<div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-    <h1 class="text-xl md:text-2xl font-bold text-green-800">🪤 نظام مصائد الحشرات ${sub}</h1>
+    <div class="flex items-center gap-3">
+      ${logoSvg(46)}
+      <div><div class="text-2xl font-extrabold text-green-800 leading-none tracking-widest" dir="ltr">PTS</div>
+      <div class="text-xs md:text-sm text-slate-600 mt-1">نظام مصائد الآفات ${sub}</div></div>
+    </div>
     <div class="flex gap-2 items-center">
       <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
       ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(CUR.email)})</button>`:''}
