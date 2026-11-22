@@ -173,7 +173,25 @@ async function flushPending(){
   } finally { flushing=false; }
   return sent;
 }
-function mapUrl(t){ return (t.lat && t.lng) ? `https://www.google.com/maps?q=${t.lat},${t.lng}` : ''; }
+/* قراءة الإحداثيات بمرونة: أرقام عربية، فاصلة عشرية عربية، أو الاثنين في خانة واحدة */
+function normDigits(s){ return String(s ?? '').replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٫،]/g,'.').replace(/[−–—]/g,'-'); }
+function numsIn(v){
+  let s = normDigits(v).trim();
+  if(!s || /[°'"′″NSEWnsew]/.test(s)) return [];
+  if(s.includes('.') && s.includes(',')) s = s.replace(/,/g,' '); else s = s.replace(/(\d),(\d)/g,'$1.$2');
+  return (s.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+}
+function parseXY(la,lo){
+  const a=numsIn(la), b=numsIn(lo); let lat,lng;
+  if(a.length>=2 && !b.length){ lat=a[0]; lng=a[1]; }
+  else if(a.length && b.length){ lat=a[0]; lng=b[0]; }
+  else return null;
+  if(!(Math.abs(lat)<=90 && Math.abs(lng)<=180) || (lat===0 && lng===0)) return null;
+  return {lat,lng};
+}
+const xy = t => parseXY(t.lat,t.lng);
+const norm = t => { const p=xy(t); return p ? {...t,lat:p.lat,lng:p.lng} : t; };
+function mapUrl(t){ const p=xy(t); return p ? `https://www.google.com/maps?q=${p.lat},${p.lng}` : ''; }
 const STATUS = {normal:['طبيعي','bg-green-100 text-green-800'], low:['إصابة منخفضة','bg-yellow-100 text-yellow-800'], high:['إصابة مرتفعة','bg-red-100 text-red-800']};
 const uniq = a => [...new Set(a.filter(Boolean))];
 
@@ -255,6 +273,7 @@ function header(sub=''){
     <div class="flex gap-2 items-center">
       <span class="text-xs px-2 py-1 rounded ${useFirebase?'bg-green-100 text-green-800':'bg-amber-100 text-amber-800'}">${useFirebase?'Firebase متصل':'وضع محلي تجريبي'}</span>
       ${pendingList().length?`<span class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">⏳ ${pendingList().length} قراءة بانتظار الإرسال</span>`:''}
+      ${CUR?`<span class="text-xs px-2 py-1 rounded ${IS_ADMIN?'bg-purple-100 text-purple-800':'bg-sky-100 text-sky-800'}">${IS_ADMIN?'مدير':'مشرف'}</span>`:''}
       ${CUR?`<button onclick="auth.signOut()" class="text-xs px-2 py-1 rounded bg-slate-200">خروج (${esc(CUR.email)})</button>`:''}
     </div>
   </div>`;
@@ -300,7 +319,7 @@ async function renderTrap(code){
         <div class="text-2xl font-bold text-green-800">${esc(t.code)}</div>
         <div class="font-semibold mt-1">${esc(t.name||'')}</div>
       </div>
-      <a href="${location.pathname}" class="text-sm text-green-700 underline">لوحة التحكم</a>
+      ${(!auth||IS_ADMIN)?`<a href="${location.pathname}" class="text-sm text-green-700 underline">لوحة التحكم</a>`:''}
     </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3 text-sm">
       <div>📍 الموقع: ${esc(t.location||'—')}</div>
@@ -383,7 +402,10 @@ let PSIZE = 'm';
 async function renderAdmin(){
   const app=$('#app');
   if(auth && !CUR){ app.innerHTML = header('— لوحة التحكم') + loginBoxHtml(); bindLogin(); return; }
-  if(auth && !IS_ADMIN){ app.innerHTML = header('— لوحة التحكم') + `<div class="bg-white rounded-xl shadow p-4 text-sm">هذا الحساب ليس مدير نظام.<br>لإعطائه صلاحية الإدارة أضف في Firebase: <b>admins ← <span dir="ltr">${esc(CUR.uid)}</span> = true</b></div>`; return; }
+  if(auth && !IS_ADMIN){ app.innerHTML = header('') + `<div class="bg-white rounded-xl shadow p-5 text-center max-w-md mx-auto my-6">
+    <div class="text-3xl mb-2">🔒</div><div class="font-bold text-green-800 mb-1">حساب مشرف</div>
+    <div class="text-sm text-slate-600">لوحة التحكم متاحة للمدير فقط.<br>امسح كود QR المطبوع على المصيدة لعرض بياناتها الأساسية وتسجيل القراءات.</div>
+    <details class="mt-4 text-xs text-slate-400"><summary>معرّف الحساب</summary><span dir="ltr">${esc(CUR.uid)}</span></details></div>`; return; }
   LISTS = await DB.getLists();
   CUR_TRAPS = await DB.getTraps();
   const isFile = location.protocol==='file:';
@@ -495,10 +517,16 @@ function tabTraps(){
     const name = $('#t_name').value;
     if(!code) return toast('الكود مطلوب');
     if(!name || name==='__new__') return toast('اختر اسم المصيدة من القائمة');
+    const rawLa=$('#t_lat').value.trim(), rawLo=$('#t_lng').value.trim(); let latS='', lngS='';
+    if(rawLa||rawLo){
+      const p=parseXY(rawLa,rawLo);
+      if(!p) return toast('الإحداثيات غير صالحة — اكتب خط العرض والطول كأرقام (مثال: 27.2579 و 33.8116)');
+      latS=p.lat.toFixed(6); lngS=p.lng.toFixed(6);
+    }
     if(!editing && await DB.getTrap(code)) return toast('هذا الكود مستخدم بالفعل');
     const old = editing ? await DB.getTrap(code) : null;
     const rec = { code, name, type:$('#t_type').value, location:$('#t_location').value,
-      lat:$('#t_lat').value.trim(), lng:$('#t_lng').value.trim(), notes:$('#t_notes').value.trim(),
+      lat:latS, lng:lngS, notes:$('#t_notes').value.trim(),
       installDate:$('#t_install').value, createdAt: old?.createdAt || Date.now() };
     await DB.saveTrap(rec);
     if(!editing){
@@ -537,7 +565,7 @@ function drawRows(){
   $('#rows').innerHTML = vis.length ? vis.map(t=>`<tr class="border-b">
     <td class="p-2"><input type="checkbox" data-sel="${esc(t.code)}" ${SEL.has(t.code)?'checked':''}></td>
     <td class="font-bold text-green-800">${esc(t.code)}</td><td>${esc(t.name)}</td><td>${esc(t.location||'')}</td><td>${esc(t.type||'')}</td>
-    <td class="text-xs whitespace-nowrap">${t.installDate?esc(t.installDate):'—'} ${t.lat&&t.lng?'<span title="تم تحديد الموقع">📍</span>':'<span title="بدون موقع">⚠️</span>'}</td>
+    <td class="text-xs whitespace-nowrap">${t.installDate?esc(t.installDate):'—'} ${hasXY(t)?'<span title="تم تحديد الموقع">📍</span>':'<span title="بدون موقع أو إحداثيات غير صالحة">⚠️</span>'}</td>
     <td class="whitespace-nowrap space-x-2 space-x-reverse">
       <button class="text-green-700" data-qr="${esc(t.code)}">QR</button>
       <a class="text-blue-700" href="?trap=${encodeURIComponent(t.code)}">فتح</a>
@@ -634,7 +662,7 @@ function mapStats(){
   const {traps,readings}=MAPDATA;
   const from = MF.from ? new Date(MF.from+'T00:00:00').getTime() : -Infinity;
   const to   = MF.to   ? new Date(MF.to+'T23:59:59').getTime() : Infinity;
-  const sel = traps.filter(t=>(!MF.trap||t.code===MF.trap)&&(!MF.type||t.type===MF.type)&&(!MF.loc||t.location===MF.loc));
+  const sel = traps.filter(t=>(!MF.trap||t.code===MF.trap)&&(!MF.type||t.type===MF.type)&&(!MF.loc||t.location===MF.loc)).map(norm);
   const by={}; readings.forEach(r=>{ if(r.ts>=from && r.ts<=to) (by[r.code]=by[r.code]||[]).push(r); });
   return sel.map(t=>{
     const rs=by[t.code]||[]; const total=rs.reduce((a,r)=>a+(+r.count||0),0);
@@ -646,7 +674,7 @@ function updateHeat(fit){
   if(!map) return;
   const stats = mapStats();
   const w = s => MF.metric==='avg' ? s.avg : s.total;
-  const withXY = stats.filter(s=>s.t.lat && s.t.lng && !isNaN(+s.t.lat) && !isNaN(+s.t.lng));
+  const withXY = stats.filter(s=>hasXY(s.t));
   const maxW = Math.max(0,...withXY.map(w));
   if(heatLayer) map.removeLayer(heatLayer);
   if(markerLayer) map.removeLayer(markerLayer);
@@ -668,13 +696,14 @@ function updateHeat(fit){
 /* ---------- خريطة مواقع المصائد (دبابيس + PDF + طباعة) ---------- */
 let pmap=null, pLayer=null, pBusy=false;
 const PV = {type:'', loc:'', sel:null};
-const hasXY = t => t.lat && t.lng && !isNaN(+t.lat) && !isNaN(+t.lng);
+const hasXY = t => !!xy(t);
 const PIN_SVG = '<svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 31C12 31 2 19 2 12a10 10 0 0 1 20 0c0 7-10 19-10 19z" fill="#dc2626" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>';
 function pinVisible(){ return CUR_TRAPS.filter(t=>(!PV.type||t.type===PV.type)&&(!PV.loc||t.location===PV.loc)); }
-function shownPins(){ return pinVisible().filter(t=>hasXY(t)&&PV.sel.has(t.code)); }
+function shownPins(){ return pinVisible().filter(t=>hasXY(t)&&PV.sel.has(t.code)).map(norm); }
 
 function tabPins(){
-  if(!PV.sel) PV.sel = new Set(CUR_TRAPS.filter(hasXY).map(t=>t.code));
+  if(!PV.sel){ PV.sel = new Set(); PV.known = new Set(); }
+  CUR_TRAPS.filter(hasXY).forEach(t=>{ if(!PV.known.has(t.code)){ PV.known.add(t.code); PV.sel.add(t.code); } });
   const T = CUR_TRAPS;
   $('#tabBody').innerHTML = `
   <div class="bg-white rounded-xl shadow p-4 mb-4 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
@@ -683,6 +712,8 @@ function tabPins(){
     <div class="flex gap-2 col-span-2 md:col-span-1"><button id="p_all" class="btn bg-slate-600 text-sm flex-1">تحديد الكل</button><button id="p_none" class="btn bg-slate-500 text-sm flex-1">إلغاء</button></div>
     <button id="p_pdf" class="btn bg-red-700 text-sm">📄 حفظ PDF</button>
     <button id="p_print" class="btn bg-slate-700 text-sm">🖨️ طباعة</button>
+    <button id="p_fix" class="btn bg-amber-600 text-sm col-span-2 md:col-span-5">🛠️ فحص وإصلاح الإحداثيات</button>
+    <div id="p_fixres" class="col-span-2 md:col-span-5 text-sm hidden bg-amber-50 border border-amber-200 rounded-lg p-3"></div>
   </div>
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
     <div class="bg-white rounded-xl shadow p-3"><div id="p_info" class="text-xs text-slate-600 mb-2"></div><div id="p_list" class="max-h-[480px] overflow-y-auto"></div></div>
@@ -697,6 +728,7 @@ function tabPins(){
   $('#p_none').onclick = () => { pinVisible().forEach(t=>PV.sel.delete(t.code)); drawPinList(); updatePins(false); };
   $('#p_pdf').onclick = () => exportPins('pdf');
   $('#p_print').onclick = () => exportPins('print');
+  $('#p_fix').onclick = fixCoords;
   drawPinList(); updatePins(true);
 }
 function drawPinList(){
@@ -704,7 +736,7 @@ function drawPinList(){
   $('#p_list').innerHTML = vis.map(t=>{ const ok=hasXY(t);
     return `<label class="flex items-center gap-2 py-1 border-b text-sm ${ok?'':'opacity-50'}">
       <input type="checkbox" data-pc="${esc(t.code)}" ${ok?'':'disabled'} ${ok&&PV.sel.has(t.code)?'checked':''}>
-      <b class="text-green-800">${esc(t.code)}</b><span class="truncate">${esc(t.name||'')}</span>${ok?'':'<span class="mr-auto text-xs">⚠️ بدون موقع</span>'}</label>`; }).join('')
+      <b class="text-green-800">${esc(t.code)}</b><span class="truncate">${esc(t.name||'')}</span>${ok?'':`<span class="mr-auto text-xs">⚠️ ${(t.lat||t.lng)?'إحداثيات غير صالحة':'بدون موقع'}</span>`}</label>`; }).join('')
     || '<div class="text-slate-400 text-sm">لا توجد مصائد</div>';
   document.querySelectorAll('[data-pc]').forEach(c=>c.onchange=()=>{ c.checked?PV.sel.add(c.dataset.pc):PV.sel.delete(c.dataset.pc); updatePins(false); });
 }
@@ -718,6 +750,37 @@ function updatePins(fit){
   const noXY = pinVisible().filter(t=>!hasXY(t)).length;
   $('#p_info').textContent = `على الخريطة: ${list.length}` + (noXY?` — بدون موقع: ${noXY}`:'');
   setTimeout(()=>pmap.invalidateSize(),50);
+}
+
+/* فحص وإصلاح الإحداثيات المخزّنة */
+async function fixCoords(){
+  const box=$('#p_fixres'); box.classList.remove('hidden'); box.textContent='جاري الفحص...';
+  const fixed=[], bad=[], odd=[];
+  for(const t of CUR_TRAPS){
+    const rl=String(t.lat??'').trim(), rg=String(t.lng??'').trim();
+    if(!rl && !rg) continue;
+    let p=parseXY(rl,rg), swapped=false;
+    if(!p){
+      const la=numsIn(rl)[0], lo=numsIn(rg)[0];
+      if(la!==undefined && lo!==undefined && Math.abs(la)>90 && Math.abs(la)<=180 && Math.abs(lo)<=90){ p={lat:lo,lng:la}; swapped=true; }
+    }
+    if(!p){ bad.push(t); continue; }
+    const clean = /^-?\d+(\.\d+)?$/.test(rl) && /^-?\d+(\.\d+)?$/.test(rg);
+    if(swapped || !clean){
+      const {_id,...rest}=t;
+      await DB.saveTrap({...rest, lat:p.lat.toFixed(6), lng:p.lng.toFixed(6)});
+      fixed.push(t.code+(swapped?' (كانت معكوسة)':''));
+    }
+    if(p.lat<21.5||p.lat>32||p.lng<24.5||p.lng>37) odd.push(t.code+` (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`);
+  }
+  CUR_TRAPS = await DB.getTraps();
+  CUR_TRAPS.filter(hasXY).forEach(t=>{ PV.known.add(t.code); PV.sel.add(t.code); });
+  drawPinList(); updatePins(true);
+  const lines=[];
+  if(fixed.length) lines.push(`✅ تم إصلاح صيغة ${fixed.length} مصيدة: ${esc(fixed.join('، '))}`);
+  if(bad.length) lines.push(`❌ إحداثيات غير صالحة (عدّلها يدوياً من زر "تعديل"): ${bad.map(t=>`<b>${esc(t.code)}</b> (<span dir="ltr">${esc(t.lat)} | ${esc(t.lng)}</span>)`).join('، ')}`);
+  if(odd.length) lines.push(`🧭 خارج نطاق مصر، راجع إن كانت معكوسة أو خاطئة: <span dir="ltr">${esc(odd.join(' ، '))}</span>`);
+  box.innerHTML = lines.length ? lines.map(l=>`<div class="mb-1">${l}</div>`).join('') : '✅ كل الإحداثيات سليمة.';
 }
 
 /* رسم الخريطة على Canvas (دبابيس + أكواد) لاستخدامها في PDF والطباعة */
